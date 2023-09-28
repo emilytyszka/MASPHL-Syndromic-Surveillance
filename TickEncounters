@@ -1,0 +1,676 @@
+---
+title: "Tick Encounters for Barnstable and Dukes County"
+output:
+  pdf_document: default
+  html_document: default
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r library and housekeeping}
+
+#Load in Libraries
+library(readxl)
+library(plyr)
+library(dplyr)
+library(arsenal)
+library(ggplot2)
+library(writexl)
+library(openxlsx)
+library(lubridate) 
+library(data.table)
+library(kableExtra)
+library(tidyr)
+library(janitor)
+library(scales)
+library(kableExtra)
+library(tinytex)
+library(yaml)
+library(ggpubr)
+library(cowplot)
+library(zoo)
+library(formattable)
+library(treemap)
+library(viridis)
+library(paletteer)
+library(rlist)
+library(magrittr)
+library(mosaic)
+library(MMWRweek)
+library(tidyverse)
+
+# ESSENCE Login
+myProfile <- Credentials$new(
+username = askme("Enter your username: "),
+password = askme()
+)
+
+# saveRDS allows you to later use another object name when reloading your credentials
+saveRDS(myProfile, file = "~/myProfile.rds")
+myProfile <- readRDS("~/myProfile.rds")
+
+```
+
+# CC and DD general tick 
+
+```{r graphing out general tick complaint, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+alltick_data <- fromJSON(api_response_json) %>%extract2("dataDetails")
+# visualize the data
+alltick_data$yrmon <- as.yearmon(as.POSIXlt(alltick_data$`Date`, format="%m/%d/%Y"))
+counties <- as.data.frame(table(alltick_data$HospitalRegion,alltick_data$yrmon))
+names(counties)[1]<-'County'
+names(counties)[2]<-'Month'
+names(counties)[3]<-'Count'
+ggplot(counties, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Count of Tick Complaint by County of Provider") + theme(aspect.ratio=1/5)
+
+```
+
+```{r table of general tick complaint, echo=FALSE}
+
+ #Generate MMWR week variable: year + numbered week
+alltick_data$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(alltick_data$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(alltick_data$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+AllTick <- as.data.frame(table(alltick_data$HospitalRegion,as.factor(alltick_data$MMWRweek))) #table of count by county per mmwr week
+names(AllTick)[1]<-'County'
+names(AllTick)[2]<-'Week'
+names(AllTick)[3]<-'Count' 
+AllTick$Count <- AllTick$Count %>% replace_na(0)
+is.na(AllTick$Count) <- with(AllTick, Count < 5 & Count > 0)
+AllTick <- pivot_wider(AllTick, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(AllTick)[2]<-'Barnstable'
+names(AllTick)[3]<-'Dukes' 
+AllTick$Total <- AllTick$Barnstable + AllTick$Dukes #add totals column
+view(AllTick)
+
+
+```
+
+# Lyme
+
+```{r graphing out lyme, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]" #for all data in this file: pull individual visit data based on hospital location (in the 2 counties looked at) from ESSENCE API, filtered to the CCDD/diagnosis code and time period of interest
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+lyme_data <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+#filter to contain A69.2 or A692 anywhere in discharge diagnosis
+lyme_data <- lyme_data %>% filter(grepl('A692|A69.2', DischargeDiagnosis))
+
+# visualize the data
+lyme_data$yrmon <- as.yearmon(as.POSIXlt(lyme_data$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(lyme_data$HospitalRegion,lyme_data$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Lyme Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/5)
+
+```
+
+```{r table of lyme, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+lyme_data$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(lyme_data$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(lyme_data$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+Lyme <- as.data.frame(table(lyme_data$HospitalRegion,as.factor(lyme_data$MMWRweek))) #table of count by county per mmwr week
+names(Lyme)[1]<-'County'
+names(Lyme)[2]<-'Week'
+names(Lyme)[3]<-'Count' 
+Lyme$Count <- Lyme$Count %>% replace_na(0)
+is.na(Lyme$Count) <- with(Lyme, Count < 5 & Count > 0)
+Lyme <- pivot_wider(Lyme, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(Lyme)[2]<-'Barnstable'
+names(Lyme)[3]<-'Dukes' 
+Lyme$Total <- Lyme$Barnstable + Lyme$Dukes #add totals column
+view(Lyme)
+
+
+```
+
+# Lyme Syndrome
+
+```{r graphing out lyme 2, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+lyme_data2 <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+# visualize the data
+lyme_data2$yrmon <- as.yearmon(as.POSIXlt(lyme_data2$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(lyme_data2$HospitalRegion,lyme_data2$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Lyme Syndrome Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/5)
+
+```
+
+```{r table of lyme, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+lyme_data2$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(lyme_data2$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(lyme_data2$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+Lyme2 <- as.data.frame(table(lyme_data2$HospitalRegion,as.factor(lyme_data2$MMWRweek))) #table of count by county per mmwr week
+names(Lyme2)[1]<-'County'
+names(Lyme2)[2]<-'Week'
+names(Lyme2)[3]<-'Count' 
+Lyme2$Count <- Lyme2$Count %>% replace_na(0)
+is.na(Lyme2$Count) <- with(Lyme2, Count < 5 & Count > 0)
+Lyme2 <- pivot_wider(Lyme2, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(Lyme2)[2]<-'Barnstable'
+names(Lyme2)[3]<-'Dukes' 
+Lyme2$Total <- Lyme2$Barnstable + Lyme2$Dukes #add totals column
+
+```
+
+```{r comparing our lyme data to a paper rosa sent, echo=FALSE}
+
+## Get variables names
+dput(names(lyme_data2))
+view(lyme_data2)
+
+lyme_data2 <- lyme_data2 %>% mutate(AgeGroup = case_when(Age >= 65 ~ '65<=',
+                                             Age >= 40  & Age <= 64 ~ '40-64',
+                                             Age >= 25  & Age <= 39 ~ '25-39',
+                                             Age >= 15  & Age <= 24 ~ '15-24',
+                                             Age >= 5  & Age <= 14 ~ '5-14',
+                                             Age >= 1  & Age <= 4 ~ '1-4',
+                                             Age < 1 ~ '<1')) # end function
+
+lyme_data2$Age <- as.numeric(lyme_data2$Age)
+
+## Vector of variables to summarize
+myVars <- c("Age", "AgeGroup", "Sex")
+## Vector of categorical variables that need transformation
+catVars <- c("Sex", "AgeGroup")
+## Create a TableOne object
+library(tableone)
+CreateTableOne(vars = myVars, data = lyme_data2, factorVars = catVars)
+summary(lyme_data2$Age)
+```
+
+# Babesiosis
+
+```{r graphing out babee, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+babe_data <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+#filter to contain B60.0 or B600 anywhere in discharge diagnosis
+babe_data <- babe_data %>% filter(grepl('B600|B60.0', DischargeDiagnosis))
+
+# visualize the data
+babe_data$yrmon <- as.yearmon(as.POSIXlt(babe_data$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(babe_data$HospitalRegion,babe_data$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Babesiosis Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/5)
+
+```
+
+```{r table of babesiosis, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+babe_data$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(babe_data$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(babe_data$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+Babesiosis <- as.data.frame(table(babe_data$HospitalRegion,as.factor(babe_data$MMWRweek))) #table of count by county per mmwr week
+names(Babesiosis)[1]<-'County'
+names(Babesiosis)[2]<-'Week'
+names(Babesiosis)[3]<-'Count' 
+Babesiosis$Count <- Babesiosis$Count %>% replace_na(0)
+is.na(Babesiosis$Count) <- with(Babesiosis, Count < 5 & Count > 0)
+Babesiosis <- pivot_wider(Babesiosis, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(Babesiosis)[2]<-'Barnstable'
+names(Babesiosis)[3]<-'Dukes' 
+Babesiosis$Total <- Babesiosis$Barnstable + Babesiosis$Dukes #add totals column
+
+```
+# Anaplasmosis
+
+```{r graphing out anaplasmosis, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+anapl_data <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+#filter to contain A77.49 or A7749 anywhere in discharge diagnosis
+anapl_data <- anapl_data %>% filter(grepl('A7749|A77.49', DischargeDiagnosis))
+
+# visualize the data
+anapl_data$yrmon <- as.yearmon(as.POSIXlt(anapl_data$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(anapl_data$HospitalRegion,anapl_data$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Anaplasmosis Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/5)
+
+```
+
+```{r table of anaplasmosis, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+anapl_data$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(anapl_data$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(anapl_data$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+Anaplasmosis <- as.data.frame(table(anapl_data$HospitalRegion,as.factor(anapl_data$MMWRweek))) #table of count by county per mmwr week
+names(Anaplasmosis)[1]<-'County'
+names(Anaplasmosis)[2]<-'Week'
+names(Anaplasmosis)[3]<-'Count' 
+Anaplasmosis$Count <- Anaplasmosis$Count %>% replace_na(0)
+is.na(Anaplasmosis$Count) <- with(Anaplasmosis, Count < 5 & Count > 0)
+Anaplasmosis <- pivot_wider(Anaplasmosis, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(Anaplasmosis)[2]<-'Barnstable'
+names(Anaplasmosis)[3]<-'Dukes' 
+Anaplasmosis$Total <- Anaplasmosis$Barnstable + Anaplasmosis$Dukes #add totals column
+
+#export as excel
+view(Anaplasmosis)
+```
+
+# Tick-borne relapsing fever
+
+```{r graphing out tbrf, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+tbrf <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+#filter to contain A68.1 or A681 anywhere in discharge diagnosis
+tbrf <- tbrf %>% filter(grepl('A68.1|A681', DischargeDiagnosis))
+
+# visualize the data
+tbrf$yrmon <- as.yearmon(as.POSIXlt(tbrf$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(tbrf$HospitalRegion,tbrf$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Tick-borne Relapsing Fever Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/5)
+
+```
+
+```{r table of tbrf, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+tbrf$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(tbrf$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(tbrf$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+TickborneRelapsing <- as.data.frame(table(tbrf$HospitalRegion,as.factor(tbrf$MMWRweek))) #table of count by county per mmwr week
+names(TickborneRelapsing)[1]<-'County'
+names(TickborneRelapsing)[2]<-'Week'
+names(TickborneRelapsing)[3]<-'Count' 
+TickborneRelapsing$Count <- TickborneRelapsing$Count %>% replace_na(0)
+is.na(TickborneRelapsing$Count) <- with(TickborneRelapsing, Count < 5 & Count > 0)
+TickborneRelapsing <- pivot_wider(TickborneRelapsing, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(TickborneRelapsing)[2]<-'Barnstable'
+TickborneRelapsing$Dukes <- c(0,0,0,0,0)
+TickborneRelapsing$Total <- TickborneRelapsing$Barnstable + TickborneRelapsing$Dukes #add totals column
+
+#export as excel
+view(TickborneRelapsing)
+```
+
+
+# Relapsing fever, unspecified
+
+```{r graphing out unspec relapsing, echo=FALSE}
+
+url <-[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+unspecrel <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+#filter to contain A68.9 or A689 anywhere in discharge diagnosis
+unspecrel <- unspecrel %>% filter(grepl('A68.9|A689', DischargeDiagnosis))
+
+# visualize the data
+unspecrel$yrmon <- as.yearmon(as.POSIXlt(unspecrel$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(unspecrel$HospitalRegion,unspecrel$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Relapsing Fever, Unspecified Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/5)
+
+```
+
+```{r table of anaplasmosis, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+unspecrel$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(unspecrel$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(unspecrel$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+OtherRelapsing <- as.data.frame(table(unspecrel$HospitalRegion,as.factor(unspecrel$MMWRweek))) #table of count by county per mmwr week
+names(OtherRelapsing)[1]<-'County'
+names(OtherRelapsing)[2]<-'Week'
+names(OtherRelapsing)[3]<-'Count' 
+OtherRelapsing$Count <- OtherRelapsing$Count %>% replace_na(0)
+is.na(OtherRelapsing$Count) <- with(OtherRelapsing, Count < 5 & Count > 0)
+OtherRelapsing <- pivot_wider(OtherRelapsing, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(OtherRelapsing)[2]<-'Barnstable'
+names(OtherRelapsing)[3]<-'Dukes' 
+OtherRelapsing$Total <- OtherRelapsing$Barnstable + OtherRelapsing$Dukes #add totals column
+
+#export as excel
+view(OtherRelapsing)
+```
+
+# Ehrlichosis
+
+```{r graphing out unspec relapsing, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+ehr <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+#filter to contain A68.9 or A689 anywhere in discharge diagnosis
+ehr <- ehr %>% filter(grepl('A77.40|A7740', DischargeDiagnosis))
+
+# visualize the data
+ehr$yrmon <- as.yearmon(as.POSIXlt(ehr$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(ehr$HospitalRegion,ehr$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Ehrlichosis Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/5)
+
+```
+
+```{r table of anaplasmosis, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+ehr$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(ehr$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(ehr$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+Ehrlichosis <- as.data.frame(table(ehr$HospitalRegion,as.factor(ehr$MMWRweek))) #table of count by county per mmwr week
+names(Ehrlichosis)[1]<-'County'
+names(Ehrlichosis)[2]<-'Week'
+names(Ehrlichosis)[3]<-'Count' 
+Ehrlichosis$Count <- Ehrlichosis$Count %>% replace_na(0)
+is.na(Ehrlichosis$Count) <- with(Ehrlichosis, Count < 5 & Count > 0)
+Ehrlichosis <- pivot_wider(Ehrlichosis, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(Ehrlichosis)[2]<-'Barnstable'
+names(Ehrlichosis)[3]<-'Dukes' 
+Ehrlichosis$Total <- Ehrlichosis$Barnstable + Ehrlichosis$Dukes #add totals column
+
+#export as excel
+view(Ehrlichosis)
+```
+
+# Other specified arthropod-borne viral fevers
+
+```{r graphing out unspec relapsing, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+other <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+#filter to contain A938 or A93.8 anywhere in discharge diagnosis
+other <- other %>% filter(grepl('A938|A93.8', DischargeDiagnosis))
+
+# visualize the data
+other$yrmon <- as.yearmon(as.POSIXlt(other$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(other$HospitalRegion,other$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Other Arthropod-borne Viral Fevers Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/4)
+
+```
+
+```{r table of anaplasmosis, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+other$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(other$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(other$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+OtherArthropod <- as.data.frame(table(other$HospitalRegion,as.factor(other$MMWRweek))) #table of count by county per mmwr week
+names(OtherArthropod)[1]<-'County'
+names(OtherArthropod)[2]<-'Week'
+names(OtherArthropod)[3]<-'Count' 
+OtherArthropod$Count <- OtherArthropod$Count %>% replace_na(0)
+is.na(OtherArthropod$Count) <- with(OtherArthropod, Count < 5 & Count > 0)
+OtherArthropod <- pivot_wider(OtherArthropod, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(OtherArthropod)[2]<-'Barnstable'
+names(OtherArthropod)[3]<-'Dukes' 
+OtherArthropod$Total <- OtherArthropod$Barnstable + OtherArthropod$Dukes #add totals column
+
+#export as excel
+view(OtherArthropod)
+```
+
+# Rocky Mountain Spotted Fever
+
+```{r graphing out unspec relapsing, echo=FALSE}
+
+url <-"[DAILY DATA IN ESSENCE]"
+
+api_response <- myProfile$get_api_response(url)
+api_response_json <- content(api_response, as = "text")
+rockymt <- fromJSON(api_response_json) %>%extract2("dataDetails")
+
+#filter to contain A770 or A77.0 anywhere in discharge diagnosis
+rockymt <- rockymt %>% filter(grepl('A77.0|A770', DischargeDiagnosis))
+
+# visualize the data
+rockymt$yrmon <- as.yearmon(as.POSIXlt(rockymt$`Date`, format="%m/%d/%Y"))
+counties2 <- as.data.frame(table(rockymt$HospitalRegion,rockymt$yrmon))
+names(counties2)[1]<-'County'
+names(counties2)[2]<-'Month'
+names(counties2)[3]<-'Count'
+ggplot(counties2, aes(fill=County, y=Count, x=Month)) +  geom_bar(position="stack", stat="identity", colour="black") +
+  theme_bw() +  theme(axis.text.x = element_text(angle = 90)) + xlab("Year") + ylab("Count of Visits") + 
+  ggtitle("Monthly Count of Rocky Mountain SPotted Fever Discharge Diagnosis by County of Provider") + theme(aspect.ratio=1/4)
+
+```
+
+```{r table of anaplasmosis, echo=FALSE}
+ #Generate MMWR week variable: year + numbered week
+rockymt$MMWRweek <- paste(
+  MMWRweek(as.POSIXlt(rockymt$`Date`, format="%m/%d/%Y"))$MMWRyear,      #year
+  str_pad(MMWRweek(as.POSIXlt(rockymt$`Date`, format="%m/%d/%Y"))$MMWRweek,
+          width=2, side="left", pad="0"), #MMWR week, padded so that single digits have leading 0s... that was agonizing to figure out
+  sep="-") #separated by a dash
+
+RockyMountain <- as.data.frame(table(other$HospitalRegion,as.factor(other$MMWRweek))) #table of count by county per mmwr week
+names(RockyMountain)[1]<-'County'
+names(RockyMountain)[2]<-'Week'
+names(RockyMountain)[3]<-'Count' 
+RockyMountain$Count <- RockyMountain$Count %>% replace_na(0)
+is.na(RockyMountain$Count) <- with(RockyMountain, Count < 5 & Count > 0)
+RockyMountain <- pivot_wider(RockyMountain, id_cols = `Week`, names_from = `County`, values_from = `Count`,) #make wide
+names(RockyMountain)[2]<-'Barnstable'
+names(RockyMountain)[3]<-'Dukes' 
+RockyMountain$Total <- RockyMountain$Barnstable + RockyMountain$Dukes #add totals column
+
+#export as excel
+view(RockyMountain)
+```
+
+# Vector of all weeks
+
+```{r all weeks, echo=FALSE}
+MMWRWeeks <- tibble(as.Date(as.Date("2019-01-01"):as.Date("2023-08-26"), origin="1970-01-01")) # all days between start and end date
+names(MMWRWeeks)[1]<-'Date'
+MMWRWeeks$week <- paste(MMWRweek(as.Date(MMWRWeeks$Date))$MMWRyear,      #year
+  str_pad(MMWRweek(as.Date(MMWRWeeks$Date))$MMWRweek,
+          width=2, side="left", pad="0"), #turn days into MMWR weeks
+  sep="-") #separated by a dash
+MMWRWeeks <- MMWRWeeks %>% select(week)
+MMWRWeeks <- unique(MMWRWeeks$week)
+MMWRWeeks <- tibble(MMWRWeeks)
+names(MMWRWeeks)[1]<-'Week'
+
+```
+
+# Export Everything
+```{r exports, echo=FALSE}
+
+#Fill in 0s 
+#CCDD
+AllTick$Barnstable <- as.character(AllTick$Barnstable)
+AllTick$Dukes <- as.character(AllTick$Dukes)
+AllTick$Total <- as.character(AllTick$Total)
+AllTick <- AllTick %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+AllTick <- merge(AllTick, MMWRWeeks, all.y = TRUE)
+AllTick <- AllTick %>% replace_na(list(Barnstable = "0", Dukes = "0", Total = "0"))
+view(AllTick)
+                                  
+#Lyme
+Lyme$Barnstable <- as.character(Lyme$Barnstable)
+Lyme$Dukes <- as.character(Lyme$Dukes)
+Lyme$Total <- as.character(Lyme$Total)
+Lyme <- Lyme %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+Lyme <- merge(Lyme, MMWRWeeks, all.y = TRUE)
+Lyme <- Lyme %>% replace_na(list(Barnstable = "0", Dukes = "0", Total = "0"))
+view(Lyme)
+
+#Lyme Syndrome
+Lyme2$Barnstable <- as.character(Lyme2$Barnstable)
+Lyme2$Dukes <- as.character(Lyme2$Dukes)
+Lyme2$Total <- as.character(Lyme2$Total)
+Lyme2 <- Lyme2 %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+Lyme2 <- merge(Lyme2, MMWRWeeks, all.y = TRUE)
+Lyme2 <- Lyme2 %>% replace_na(list(Barnstable = "0", Dukes = "0", Total = "0"))
+view(Lyme2)
+
+#Babesiosis
+Babesiosis$Barnstable <- as.character(Babesiosis$Barnstable)
+Babesiosis$Dukes <- as.character(Babesiosis$Dukes)
+Babesiosis$Total <- as.character(Babesiosis$Total)
+Babesiosis <- Babesiosis %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+Babesiosis <- merge(Babesiosis, MMWRWeeks, all.y = TRUE)
+Babesiosis <- Babesiosis %>% replace_na(list(Barnstable = "0", Dukes = "0", Total = "0"))
+view(Babesiosis)
+
+#Anaplasmosis
+Anaplasmosis$Barnstable <- as.character(Anaplasmosis$Barnstable)
+Anaplasmosis$Dukes <- as.character(Anaplasmosis$Dukes)
+Anaplasmosis$Total <- as.character(Anaplasmosis$Total)
+Anaplasmosis <- Anaplasmosis %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+Anaplasmosis <- merge(Anaplasmosis, MMWRWeeks, all.y = TRUE)
+Anaplasmosis <- Anaplasmosis %>% replace_na(list(Barnstable = "0", Dukes = "0", Total = "0"))
+view(Anaplasmosis)
+
+#Tickborne Relapsing
+TickborneRelapsing$Barnstable <- as.character(TickborneRelapsing$Barnstable)
+TickborneRelapsing$Dukes <- as.character(TickborneRelapsing$Dukes)
+TickborneRelapsing$Total <- as.character(TickborneRelapsing$Total)
+TickborneRelapsing <- TickborneRelapsing %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+TickborneRelapsing <- merge(TickborneRelapsing, MMWRWeeks, all.y = TRUE)
+TickborneRelapsing <- TickborneRelapsing %>% replace_na(list(Barnstable = "0", Dukes = "0", Total = "0"))
+view(TickborneRelapsing)
+
+#Other Relapsing
+OtherRelapsing$Barnstable <- as.character(OtherRelapsing$Barnstable)
+OtherRelapsing$Dukes <- as.character(OtherRelapsing$Dukes)
+OtherRelapsing$Total <- as.character(OtherRelapsing$Total)
+OtherRelapsing <- OtherRelapsing %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+OtherRelapsing <- merge(OtherRelapsing, MMWRWeeks, all.y = TRUE)
+OtherRelapsing <- OtherRelapsing %>% replace_na(list(Barnstable = '0', Dukes = "0", Total = "0"))
+view(OtherRelapsing)
+
+#Ehrlichosis
+Ehrlichosis$Barnstable <- as.character(Ehrlichosis$Barnstable)
+Ehrlichosis$Dukes <- as.character(Ehrlichosis$Dukes)
+Ehrlichosis$Total <- as.character(Ehrlichosis$Total)
+Ehrlichosis <- Ehrlichosis %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+Ehrlichosis <- merge(Ehrlichosis, MMWRWeeks, all.y = TRUE)
+Ehrlichosis <- Ehrlichosis %>% replace_na(list(Barnstable = "0", Dukes = "0", Total = "0"))
+view(Ehrlichosis)
+
+#Other
+OtherArthropod$Barnstable <- as.character(OtherArthropod$Barnstable)
+OtherArthropod$Dukes <- as.character(OtherArthropod$Dukes)
+OtherArthropod$Total <- as.character(OtherArthropod$Total)
+OtherArthropod <- OtherArthropod %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+OtherArthropod <- merge(OtherArthropod, MMWRWeeks, all.y = TRUE)
+OtherArthropod <- OtherArthropod %>% replace_na(list(Barnstable = '0', Dukes = "0", Total = "0"))
+view(OtherArthropod)
+
+#Rocky Mt
+RockyMountain$Barnstable <- as.character(RockyMountain$Barnstable)
+RockyMountain$Dukes <- as.character(RockyMountain$Dukes)
+RockyMountain$Total <- as.character(RockyMountain$Total)
+RockyMountain <- RockyMountain %>% replace_na(list(Barnstable = "1-4", Dukes = "1-4", Total = "Repressed"))
+RockyMountain <- merge(RockyMountain, MMWRWeeks, all.y = TRUE)
+RockyMountain <- RockyMountain %>% replace_na(list(Barnstable = '0', Dukes = "0", Total = "0"))
+view(RockyMountain)
+
+#Export!
+write.xlsx(AllTick, "AllTick.xlsx")
+write.xlsx(Lyme, "Lyme.xlsx")
+write.xlsx(Lyme2, "LymeSyndrome.xlsx")
+write.xlsx(Babesiosis, "Babesiosis.xlsx")
+write.xlsx(Anaplasmosis, "Anaplasmosis.xlsx")
+write.xlsx(TickborneRelapsing, "TickborneRelapsing.xlsx")
+write.xlsx(OtherRelapsing, "OtherRelapsing.xlsx")
+write.xlsx(Ehrlichosis, "Ehrlichosis.xlsx")
+write.xlsx(OtherArthropod, "OtherArthropod.xlsx")
+write.xlsx(RockyMountain, "RockyMountain.xlsx")
+```
+

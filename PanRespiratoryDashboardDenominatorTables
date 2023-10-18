@@ -1,0 +1,96 @@
+---
+title: "PANRESP_DenominatorTables"
+output:
+  pdf_document: default
+  html_document: default
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r library and housekeeping}
+
+#Load in Libraries
+library(readxl)
+library(plyr)
+library(dplyr)
+library(arsenal)
+library(ggplot2)
+library(writexl)
+library(openxlsx)
+library(lubridate) 
+library(data.table)
+library(kableExtra)
+library(tidyr)
+library(janitor)
+library(scales)
+library(kableExtra)
+library(tinytex)
+library(yaml)
+library(ggpubr)
+library(cowplot)
+library(zoo)
+library(formattable)
+library(treemap)
+library(viridis)
+library(paletteer)
+library(rlist)
+library(httr)
+library(magrittr)
+library(mosaic)
+library(MMWRweek)
+library(tidyverse)
+
+# ESSENCE Login
+library(Rnssp)
+myProfile <- Credentials$new(
+username = askme("Enter your username: "),
+password = askme() )
+saveRDS(myProfile, file = "~/myProfile.rds")
+
+# saveRDS allows you to later use another object name when reloading your credentials
+myProfile <- readRDS("~/myProfile.rds")
+
+```
+
+# Weekly total ED Visits and Admissions by Hospital Region
+
+```{r load, echo=FALSE}
+
+url <-"https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?geography=ma_barnstable&geography=ma_berkshire&geography=ma_bristol&geography=ma_dukes&geography=ma_essex&geography=ma_franklin&geography=ma_hampden&geography=ma_hampshire&geography=ma_middlesex&geography=ma_nantucket&geography=ma_norfolk&geography=ma_plymouth&geography=ma_suffolk&geography=ma_worcester&datasource=va_hosp&startDate=2Jul2023&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=14Oct2023&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=hospitalregion&detector=nodetectordetector&timeResolution=weekly&rowFields=geographyhospitalregion&rowFields=timeResolution&columnField=hasBeenAdmitted"
+
+api_response <- myProfile$get_api_response(url)
+RESP_WEEKLY_DENOM <- content(api_response, style = "text") %>% read_csv()
+
+names(RESP_WEEKLY_DENOM)[1]<-'County'
+names(RESP_WEEKLY_DENOM)[2]<-'WeekYear'
+names(RESP_WEEKLY_DENOM)[3]<-'Admitted_No'
+names(RESP_WEEKLY_DENOM)[4]<-'Admitted_Yes'
+RESP_WEEKLY_DENOM$Total <- api_data_weekly$Admitted_No + RESP_WEEKLY_DENOM$Admitted_Yes
+
+view(RESP_WEEKLY_DENOM)
+write.xlsx(RESP_WEEKLY_DENOM, file = paste("WEEKLY_OUT_DENOM",format(Sys.time(), "%m%d%y"),".xlsx"))
+
+
+
+```
+
+
+# Daily 
+```{r load, echo=FALSE}
+
+url <-"https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=2Jul2023&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=14Oct2023&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=timeResolution&columnField=hasBeenAdmitted"
+
+api_response <- myProfile$get_api_response(url)
+RESP_DAILY_DENOM <- content(api_response, style = "text") %>% read_csv()
+names(RESP_DAILY_DENOM)[1]<-'Date_of_Visit'
+names(RESP_DAILY_DENOM)[2]<-'HasBeenAdmittedNo'
+names(RESP_DAILY_DENOM)[3]<-'HasBeenAdmittedYes'
+view(RESP_DAILY_DENOM)
+
+write.xlsx(RESP_DAILY_DENOM, file = paste("DAILY_OUT_DENOM",format(Sys.time(), "%m%d%y"),".xlsx"))
+
+```

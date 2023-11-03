@@ -1,0 +1,274 @@
+---
+title: "Pan Resp Weekly Linelist"
+output:
+  pdf_document: default
+  html_document: default
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r library and housekeeping}
+
+#Load in Libraries
+library(readxl)
+library(plyr)
+library(dplyr)
+library(arsenal)
+library(ggplot2)
+library(writexl)
+library(openxlsx)
+library(lubridate) 
+library(data.table)
+library(kableExtra)
+library(tidyr)
+library(janitor)
+library(scales)
+library(kableExtra)
+library(tinytex)
+library(yaml)
+library(ggpubr)
+library(cowplot)
+library(zoo)
+library(formattable)
+library(treemap)
+library(viridis)
+library(paletteer)
+library(rlist)
+library(httr)
+library(magrittr)
+library(mosaic)
+library(MMWRweek)
+library(tidyverse)
+
+# ESSENCE Login
+library(Rnssp)
+myProfile <- Credentials$new(
+username = askme("Enter your username: "),
+password = askme() )
+saveRDS(myProfile, file = "~/myProfile.rds")
+
+# saveRDS allows you to later use another object name when reloading your credentials
+myProfile <- readRDS("~/myProfile.rds")
+
+
+```
+
+# Load Data
+
+```{r load, echo=FALSE}
+start_date <- "2Jul2023"
+end_date <- "28Oct2023"
+mmwrweek <- "2023-43"
+
+url <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/dataDetails/csv?datasource=va_er&startDate=", start_date, "&medicalGroupingSystem=essencesyndromes&userId=[YOURUSERIDGOESHERE]&endDate=", end_date, "&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=DataDetails&ccddCategory=cdc%20broad%20acute%20respiratory%20dd%20v1&geographySystem=region&detector=probrepswitch&timeResolution=daily&refValues=true")
+
+api_response <- myProfile$get_api_response(url)
+api_data <- content(api_response, style = "text") %>% read_csv()
+
+Data <- api_data %>% select("Age", "C_Patient_Age", "C_Patient_Age_Units", "Sex", "c_race", "c_ethnicity", "CRace_CEth_Combined_Broad", "CRace_CEth_Combined_Narrow",
+                            "Patient_City", "Patient_Zip", "ZipCode", "Patient_State", "Region", "HospitalName", "HospitalRegion", "HospitalZip", "HospitalState",
+                            "Treating_Facility_ID", "Date", "C_Visit_Date_Time", "HasBeenAdmitted", "DeathIndicator", "Diagnosis_Combo", "DischargeDiagnosis", "CCDD",
+                            "CCDDCategory_flat", "MonthYear", "WeekYear")
+Data <- Data %>%
+  mutate(SYS_Broad_Acute_Resp = ifelse(grepl(";CDC Broad Acute Respiratory DD v1;", CCDDCategory_flat, fixed=TRUE)==TRUE, 1, NA))%>%
+  mutate(SYS_COVID = ifelse(grepl(";CDC COVID-Specific DD v1;", CCDDCategory_flat, fixed=TRUE)==TRUE, 1, NA))%>%
+  mutate(SYS_Influenza = ifelse(grepl(";CDC Influenza DD v1;", CCDDCategory_flat, fixed=TRUE)==TRUE, 1, NA))%>%
+  mutate(SYS_RSV = ifelse(grepl(";CDC Respiratory Syncytial Virus DD v1;", CCDDCategory_flat, fixed=TRUE)==TRUE, 1, NA))%>%
+  mutate(SYS_ILI = ifelse(grepl(";ILI CCDD v1;", CCDDCategory_flat, fixed=TRUE)==TRUE, 1, NA)) %>%
+  mutate(MA_CITY = ifelse(Patient_State == "25" | Patient_State == "MA", toupper(`Patient_City`), "Out of State"))
+
+colnames(Data)[colnames(Data) == 'Patient_State'] <- 'State'
+
+Data <- Data %>% select(Date, HospitalName, ZipCode, Region, DischargeDiagnosis, C_Visit_Date_Time, Sex, Age, C_Patient_Age, C_Patient_Age_Units, c_ethnicity, c_race, HospitalZip, Diagnosis_Combo, CCDD, CCDDCategory_flat, State, HospitalRegion, HospitalState, WeekYear, MonthYear, DeathIndicator, Treating_Facility_ID, Patient_Zip, Patient_City, HasBeenAdmitted, CRace_CEth_Combined_Broad, CRace_CEth_Combined_Narrow, SYS_Broad_Acute_Resp, SYS_COVID, SYS_Influenza, SYS_RSV, SYS_ILI, MA_CITY)
+
+Data$C_Patient_Age_Units <- as.factor(Data$C_Patient_Age_Units)
+summary(Data$C_Patient_Age_Units) # always check for new permutations to collapse
+
+Data$C_Patient_Age_Units <- fct_collapse(Data$C_Patient_Age_Units,
+  Months = c("month", "months"),
+  Years = c("year", "Year", "YEAR", "years"),
+  Unknown = "none"
+)
+view(Data)
+#write.xlsx(Data, file = paste("RESP_linelist",format(Sys.time(), "%m%d%y"),".xlsx"), sheetName = "Sheet 1") 
+write.csv(Data, file = paste("RESP_linelist",format(Sys.time(), "%m%d%y"),".csv")) 
+
+None <- Data %>% filter(C_Patient_Age_Units == "Unknown") 
+```
+
+
+#Weekly Update Tables
+
+```{r agetables, echo=FALSE}
+
+RatesData <- Data %>% filter(WeekYear == mmwrweek) ## CHANGE FILTERING TO WEEKYEAR
+RatesData$C_Patient_Age <- as.numeric(RatesData$C_Patient_Age)
+RatesData$AgeGroup <- ifelse(RatesData$C_Patient_Age_Units == "Months" | RatesData$C_Patient_Age < 5, "Under 5 years", 
+                             ifelse(RatesData$C_Patient_Age >= 5  & RatesData$C_Patient_Age < 20 , "5-19 years",
+                                      ifelse(RatesData$C_Patient_Age >= 20  & RatesData$C_Patient_Age < 35 , "20-34 years",
+                                           ifelse(RatesData$C_Patient_Age >= 35  & RatesData$C_Patient_Age < 50 , "35-49 years",
+                                                  ifelse(RatesData$C_Patient_Age >= 50  & RatesData$C_Patient_Age < 65 , "50-64 years",
+                                                         ifelse(RatesData$C_Patient_Age >= 65  & RatesData$C_Patient_Age < 80 , "65-79 years",
+                                                                ifelse(RatesData$C_Patient_Age >= 80, "80+ years", NA
+                                                  )))))))
+
+AgeTable <-as.data.frame(table(RatesData$AgeGroup,RatesData$HasBeenAdmitted))
+
+names(AgeTable)[1]<-'Age'
+names(AgeTable)[2]<-'Admitted'
+names(AgeTable)[3]<-'Count'
+
+AgeTable$Admitted <- fct_collapse(as.factor(AgeTable$Admitted),
+  YES = "1",
+  NO = "0"
+)
+
+AgeTableWide<-reshape(AgeTable, idvar= 'Age', timevar='Admitted', direction="wide")
+
+AgeTableWide$`ED Visits1` <- AgeTableWide$Count.NO + AgeTableWide$Count.YES
+view(AgeTableWide)
+AgeKey <- data.frame(c("Under 5 years", "5-19 years", "20-34 years", "35-49 years","50-64 years", "65-79 years", "80+ years"))
+AgeKey$pop2020 <- c("356878.9331","1208696.36", "1510757.646", 
+                          "1307950.041", "1444570.402", 
+                          "899365.7143", "301697.9003")
+names(AgeKey)[1]<-'Age'
+
+AgeTableWide <- merge(AgeTableWide, AgeKey, by = "Age", all = TRUE)
+AgeTableWide$pop2020 <- as.numeric(AgeTableWide$pop2020)
+AgeTableWide$`ED Visits` <- 100000*AgeTableWide$`ED Visits1`/AgeTableWide$pop2020
+AgeTableWide$`Admissions` <- 100000*AgeTableWide$`Count.YES`/AgeTableWide$pop2020
+
+AgeTableFinal <- AgeTableWide %>% select(Age, `ED Visits`, Admissions) %>% arrange(factor(Age, levels = c("Under 5 years", "5-19 years", "20-34 years", "35-49 years",
+                                                                                                          "50-64 years", "65-79 years", "80+ years")))
+
+view(AgeTableFinal)
+
+```
+
+
+```{r rates misc, echo=FALSE}
+view(RatesData)
+
+#All Resp
+Respadm <- as.data.frame(table(RatesData$HasBeenAdmitted))
+Respadm$Var1 <- fct_collapse(as.factor(Respadm$Var1),
+  YES = "1",
+  NO = "0"
+)
+Respadm<-spread(Respadm, key = Var1, value = Freq)
+Respadm$`ED Visits` <- Respadm$NO + Respadm$YES
+names(Respadm)[2]<-'Admissions'
+Respadm <- subset(Respadm, select = -`NO`)
+Respadm$` ` <- "Acute Respiratory Disease"
+
+#COVID
+COVID <- RatesData %>% filter(SYS_COVID == 1)
+COVIDadm <- as.data.frame(table(COVID$HasBeenAdmitted))
+COVIDadm$Var1 <- fct_collapse(as.factor(COVIDadm$Var1),
+  YES = "1",
+  NO = "0"
+)
+COVIDadm<-spread(COVIDadm, key = Var1, value = Freq)
+COVIDadm$`ED Visits` <- COVIDadm$NO + COVIDadm$YES
+names(COVIDadm)[2]<-'Admissions'
+COVIDadm <- subset(COVIDadm, select = -`NO`)
+COVIDadm$` ` <- "COVID"
+
+# FLU
+Influenza <- RatesData %>% filter(SYS_Influenza == 1)
+Influenzaadm <- as.data.frame(table(Influenza$HasBeenAdmitted))
+Influenzaadm$Var1 <- fct_collapse(as.factor(Influenzaadm$Var1),
+  YES = "1",
+  NO = "0"
+)
+Influenzaadm<-spread(Influenzaadm, key = Var1, value = Freq)
+Influenzaadm$`ED Visits` <- Influenzaadm$NO + Influenzaadm$YES
+names(Influenzaadm)[2]<-'Admissions'
+Influenzaadm <- subset(Influenzaadm, select = -`NO`)
+Influenzaadm$` ` <- "Influenza"
+
+# RSV
+RSV <- RatesData %>% filter(SYS_RSV == 1)
+RSVadm <- as.data.frame(table(RSV$HasBeenAdmitted))
+RSVadm$Var1 <- fct_collapse(as.factor(RSVadm$Var1),
+  YES = "1",
+  NO = "0"
+)
+RSVadm<-spread(RSVadm, key = Var1, value = Freq)
+RSVadm$`ED Visits` <- RSVadm$NO + RSVadm$YES
+names(RSVadm)[2]<-'Admissions'
+RSVadm <- subset(RSVadm, select = -`NO`)
+RSVadm$` ` <- "RSV"
+
+
+
+RatesTable <- rbind(Respadm, COVIDadm, Influenzaadm, RSVadm) %>% select(` `, `ED Visits`, `Admissions`)
+RatesTableFinal <- RatesTable
+DenomsRaw <- RESP_WEEKLY_DENOM
+DenomsRaw <- DenomsRaw %>% filter(WeekYear ==mmwrweek) #CHANGE HERE AS WELL
+DenomsRaw <- DenomsRaw %>%
+  adorn_totals("row")%>% filter(County=="Total") %>% select("Admitted_No", "Admitted_Yes", "Total")
+DenomsRaw$site <- "Massachusetts"
+names(DenomsRaw)[1]<-'No'
+names(DenomsRaw)[2]<-'Yes'
+Denoms <- DenomsRaw
+
+view(Denoms)
+AllED <- Denoms[rep(seq_len(nrow(Denoms)), each = 4), ] %>% select(Total)
+Admit <- Denoms[rep(seq_len(nrow(Denoms)), each = 4), ] %>% select(Yes)
+
+RatesTableFinal$`ED Visits` <- RatesTableFinal$`ED Visits`/AllED
+RatesTableFinal$`Admissions` <- RatesTableFinal$`Admissions`/Admit
+
+RatesTableFinal$`ED Visits` <- as.factor(percent(as.numeric(unlist(RatesTableFinal$`ED Visits`))))
+RatesTableFinal$`Admissions` <- as.factor(percent(as.numeric(unlist(RatesTableFinal$`Admissions`))))
+
+Denoms <- Denoms %>% select(site, Total, Yes)
+names(Denoms)[1]<-' '
+names(Denoms)[2]<-'ED Visits'
+names(Denoms)[3]<-'Admissions'
+
+
+RatesTableFinal <- rbind(Denoms, RatesTableFinal)
+RatesTableFinal$` `[RatesTableFinal$` ` == "Massachusetts"] <- "Total Visits"               
+
+write.xlsx(RatesTableFinal, file = paste("Respiratory Summary",format(Sys.time(), "%m%d%y"),".xlsx")) 
+write.xlsx(AgeTableFinal, file = paste("Pan Resp by Age",format(Sys.time(), "%m%d%y"),".xlsx")) 
+
+view(RatesTableFinal)
+
+```
+
+
+### RECREATE TABLE 
+```{r rates misc, echo=FALSE}
+
+# Respiratory Visits
+RatesDataAdm <- RatesData %>% filter(HasBeenAdmitted =="1")
+RatesDataAdmNot <- RatesData %>% filter(HasBeenAdmitted =="0")
+NAdmResp <- as.data.frame(table(RatesDataAdmNot$HospitalRegion)) 
+names(NAdmResp)[2]<-'NoAdmResp'
+YAdmResp <- as.data.frame(table(RatesDataAdm$HospitalRegion))
+names(YAdmResp)[2]<-'YesAdmResp'
+
+AdmResp <- merge(NAdmResp, YAdmResp, by.x = "Var1", by.y = "Var1", all.x = TRUE)
+AdmResp$TotalResp <- AdmResp$NoAdmResp + AdmResp$YesAdmResp
+
+# All Visits
+AdmGen <- RESP_WEEKLY_DENOM %>% filter(WeekYear == mmwrweek)
+AdmGen <- subset(AdmGen, select = -WeekYear)
+names(AdmGen)[2]<-'NoAdmGen'
+names(AdmGen)[3]<-'YesAdmGen'
+names(AdmGen)[4]<-'TotalAdmGen'
+
+Admissions <- merge(AdmGen, AdmResp, by.x = "County", by.y = "Var1", all = TRUE)
+Admissions$NoPercent <- 100*Admissions$NoAdmResp/Admissions$NoAdmGen
+Admissions$YesPercent <- 100*Admissions$YesAdmResp/Admissions$YesAdmGen
+view(Admissions)
+```
+COMPARE THIS TABLE TO: 
+[https://essence2.syndromicsurveillance.org/nssp_essence/servlet/TableBuilder?percentParam=ccddCategory&medicalGroupingSystem=essencesyndromes&userId=[YOURUSERIDGOESHERE]&geographySystem=hospitalregion&site=899&ccddCategory=cdc%20broad%20acute%20respiratory%20dd%20v1&geography=ma_barnstable&geography=ma_berkshire&geography=ma_bristol&geography=ma_dukes&geography=ma_essex&geography=ma_franklin&geography=ma_hampden&geography=ma_hampshire&geography=ma_middlesex&geography=ma_nantucket&geography=ma_norfolk&geography=ma_plymouth&geography=ma_suffolk&geography=ma_worcester&datasource=va_hosp&timeResolution=weekly&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&detector=nodetectordetector&displayTotals=true&displayTotals=true&displayTotals=true&displayTotals=true&displayZeroCountRows=true&displayZeroCountRows=true&rawValues=false&rawValues=false&fieldIDs=geographyhospitalregion&fieldIDs=hasBeenAdmitted&fieldLabels=Hospital%20Region&fieldLabels=Has%20Been%20Admitted&graphWidth=527&portletId=357381&dateconfig=17&forceRefresh=true&action=getTableData&startDate=22Oct23&endDate=28Oct23]

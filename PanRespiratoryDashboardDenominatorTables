@@ -60,7 +60,10 @@ myProfile <- readRDS("~/myProfile.rds")
 
 ```{r load, echo=FALSE}
 
-url <-"https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?geography=ma_barnstable&geography=ma_berkshire&geography=ma_bristol&geography=ma_dukes&geography=ma_essex&geography=ma_franklin&geography=ma_hampden&geography=ma_hampshire&geography=ma_middlesex&geography=ma_nantucket&geography=ma_norfolk&geography=ma_plymouth&geography=ma_suffolk&geography=ma_worcester&datasource=va_hosp&startDate=2Jul2023&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=14Oct2023&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=hospitalregion&detector=nodetectordetector&timeResolution=weekly&rowFields=geographyhospitalregion&rowFields=timeResolution&columnField=hasBeenAdmitted"
+start_date <- "2Jul2023"
+end_date <- "28Oct2023"
+
+url <-paste0("https://essence.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?geography=ma_barnstable&geography=ma_berkshire&geography=ma_bristol&geography=ma_dukes&geography=ma_essex&geography=ma_franklin&geography=ma_hampden&geography=ma_hampshire&geography=ma_middlesex&geography=ma_nantucket&geography=ma_norfolk&geography=ma_plymouth&geography=ma_suffolk&geography=ma_worcester&datasource=va_hosp&startDate=", start_date, "&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date, "&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=hospitalregion&detector=nodetectordetector&timeResolution=weekly&rowFields=geographyhospitalregion&rowFields=timeResolution&columnField=hasBeenAdmitted")
 
 api_response <- myProfile$get_api_response(url)
 RESP_WEEKLY_DENOM <- content(api_response, style = "text") %>% read_csv()
@@ -69,11 +72,11 @@ names(RESP_WEEKLY_DENOM)[1]<-'County'
 names(RESP_WEEKLY_DENOM)[2]<-'WeekYear'
 names(RESP_WEEKLY_DENOM)[3]<-'Admitted_No'
 names(RESP_WEEKLY_DENOM)[4]<-'Admitted_Yes'
-RESP_WEEKLY_DENOM$Total <- api_data_weekly$Admitted_No + RESP_WEEKLY_DENOM$Admitted_Yes
+RESP_WEEKLY_DENOM$Total <- RESP_WEEKLY_DENOM$Admitted_No + RESP_WEEKLY_DENOM$Admitted_Yes
 
-view(RESP_WEEKLY_DENOM)
 write.xlsx(RESP_WEEKLY_DENOM, file = paste("WEEKLY_OUT_DENOM",format(Sys.time(), "%m%d%y"),".xlsx"))
 
+view(RESP_WEEKLY_DENOM)
 
 
 ```
@@ -82,7 +85,7 @@ write.xlsx(RESP_WEEKLY_DENOM, file = paste("WEEKLY_OUT_DENOM",format(Sys.time(),
 # Daily 
 ```{r load, echo=FALSE}
 
-url <-"https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=2Jul2023&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=14Oct2023&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=timeResolution&columnField=hasBeenAdmitted"
+url <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=timeResolution&columnField=hasBeenAdmitted")
 
 api_response <- myProfile$get_api_response(url)
 RESP_DAILY_DENOM <- content(api_response, style = "text") %>% read_csv()

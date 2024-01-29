@@ -1,0 +1,584 @@
+---
+title: "Lag Analysis"
+output: html_document
+date: "2023-12-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readxl)
+library(plyr)
+library(dplyr)
+library(arsenal)
+library(ggplot2)
+library(writexl)
+library(openxlsx)
+library(lubridate) 
+library(data.table)
+library(kableExtra)
+library(tidyr)
+library(janitor)
+library(scales)
+library(kableExtra)
+library(tinytex)
+library(yaml)
+library(ggpubr)
+library(cowplot)
+library(zoo)
+library(formattable)
+library(treemap)
+library(viridis)
+library(paletteer)
+library(rlist)
+library(httr)
+library(magrittr)
+library(mosaic)
+library(MMWRweek)
+library(stringi)
+library(tidyverse)
+
+# Steps so far
+# - Pulled line level data for COVID-19
+# - Split up the update times, merge with main data
+# - Clean update times
+# - Calculate time gaps
+#
+
+# Improvements to be done ----
+# - redo merge with biosense c processed 
+# - most common CC of admissions
+# - most common first icd10 of admission
+# - facilities with higher tots
+
+
+
+```
+
+# Prepare Data 
+```{r data, include=FALSE}
+
+myProfile <- readRDS("~/myProfile.rds")
+
+start_date <- "1Dec2022"
+end_date <- "30Jun2023"
+
+#Pull in
+url <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/dataDetails/csv?datasource=va_er&startDate=", start_date, "&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date, "&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=DataDetails&ccddCategory=cdc%20covid-specific%20dd%20v1&geographySystem=region&detector=probrepswitch&timeResolution=daily&refValues=true")
+
+api_response <- myProfile$get_api_response(url)
+api_data <- content(api_response, style = "text") %>% read_csv()
+api_data$rn <- row.names(api_data) #create a row name for merge
+
+#Convert to tibble, split up the strings, re-merge, reshape
+api_data2 <- as_tibble(api_data)
+api_data2$Index <- paste(api_data2$PID, api_data2$Arrived_Date_Time, api_data2$CCDDParsed)
+Wide <- api_data2 %>% separate_wider_delim(DischargeDiagnosisMDTUpdates, delim = "{", names_sep = "", too_few = "align_start")
+Long <- gather(Wide, index, "Update", DischargeDiagnosisMDTUpdates1:DischargeDiagnosisMDTUpdates46, factor_key=TRUE)  #convert long to short - X1 X2 etc turned into 1 column labelled as "Update" 
+Long$Index <- paste(Long$C_Processed_BioSense_ID, parse_number(as.character(Long$index)))
+
+# Clean dates
+Long$Update <- gsub(".*\\}", "", Long$Update) # Get rid of the number in brackets at the start
+Long$Update <- gsub("|", "", Long$Update) #Get rid of the semicolons surrounding messages - now all that is there is a date time
+Long$Update <- gsub(";+", "", Long$Update) #Get rid of the semicolons surrounding messages - now all that is there is a date time
+Long$Update <- as.POSIXct(Long$Update, format="%Y-%m-%d %H:%M:%S", tz="UTC")
+Long <- Long %>% drop_na(Update)
+
+#Repeated on DD Messages
+Wide2 <- api_data2 %>% separate_wider_delim(DischargeDiagnosisUpdates, delim = "{", names_sep = "", too_few = "align_start")
+Long2 <- gather(Wide2, index, `Update DD`, DischargeDiagnosisUpdates1:DischargeDiagnosisUpdates46, factor_key=TRUE)  #convert long to short - X1 X2 etc turned into 1 column labelled as "Update" 
+
+Long2$Index <- paste(Long2$C_Processed_BioSense_ID, parse_number(as.character(Long2$index)))
+
+Long2$`Update DD` <- gsub(".*\\}", "", Long2$`Update DD`)# Get rid of the number in brackets at the start
+Long2 <- Long2 %>% filter(`Update DD` != "")
+Long2 <- Long2 %>% drop_na(`Update DD`)
+Long2a <- Long2 %>% select(`Index`, `Update DD`)
+
+Alla <- merge(Long, Long2a, by = "Index")
+
+All <- Alla  %>% filter(`Update DD` != ";;|")
+
+summary(api_data$Hospital)
+```
+
+
+
+# Summary Stats: Arrival to First COVID Update 
+
+```{r graph 1, include=FALSE}
+
+# Find arrival-to-update time
+All$ArrivaltoUpdate <- as.numeric(difftime(All$Arrived_Date_Time, All$Update, units = "days"))
+
+# Filter to first COVID-19 appearance
+Covid <- All %>%  filter(grepl("U07", `Update DD`)) # filter to covids
+Covid <- Covid[order(Covid$ArrivaltoUpdate),]# sort by lower time 
+
+
+FirstCovid <-Covid |> group_by(C_Processed_BioSense_ID) |> slice(1) # pull first appearance
+
+
+summary(FirstCovid$ArrivaltoUpdate)
+histogram(FirstCovid$ArrivaltoUpdate, breaks = 90)
+
+view(api_data[duplicated(api_data$C_Processed_BioSense_ID),])
+
+
+Dupes <- FirstCovid %>% group_by(C_Processed_BioSense_ID) %>% filter(n() > 1)
+view(Dupes)
+
+
+``` 
+
+```{r admission breakup, include=FALSE}
+
+FirstCovid$HasBeenAdmitted <- as.factor(FirstCovid$HasBeenAdmitted)
+
+ggplot(FirstCovid, aes(x = ArrivaltoUpdate)) + theme_bw() +
+  geom_histogram(aes(fill = HasBeenAdmitted),
+                position = "identity", bins = 30) + facet_grid(HasBeenAdmitted ~ .)
+
+tapply(FirstCovid$ArrivaltoUpdate, FirstCovid$HasBeenAdmitted, summary) 
+
+summary(FirstCovid$HasBeenAdmitted)
+
+
+```
+
+```{r by vendor time, include=FALSE}
+
+FirstCovid$Weekday <- weekdays(FirstCovid$Arrived_Date_Time)
+
+
+#pull in vendor info + merge
+vendors <- read.csv("Syndromic Facilities_MA_2024-01-03.csv") %>% select("C_BioFacility_Id", "Facility_Name", "Vendor_Name", "Vendor_Software")
+FirstCovid <- merge(FirstCovid, vendors, by.x = "Hospital", by.y = "C_BioFacility_Id", all.x = TRUE)
+FirstCovid$Vendor_Name <- as.factor(FirstCovid$Vendor_Name)
+FirstCovid$Vendor_Software <- as.factor(FirstCovid$Vendor_Software)
+
+lmAdmDay <- lm(ArrivaltoUpdate~Weekday + HasBeenAdmitted, data = FirstCovid) #Create the linear regression
+summary(lmAdmDay)
+
+
+lmVendorN <- lm(ArrivaltoUpdate~Vendor_Name, data = FirstCovid) #Create the linear regression
+summary(lmVendorN)
+
+
+tapply(FirstCovid$ArrivaltoUpdate, FirstCovid$Vendor_Software, summary) 
+lmVendorS <- lm(ArrivaltoUpdate~ Vendor_Software, data = FirstCovid) 
+summary(lmVendorS)
+
+lmVendorN <- lm(ArrivaltoUpdate~Facility_Name, data = FirstCovid) #Create the linear regression
+summary(lmVendorN)
+```
+
+```{r survival-type model, include=FALSE}
+
+library(survival)
+library(ggsurvfit)
+
+ModelData <- FirstCovid %>% select(ArrivaltoUpdate, HasBeenAdmitted)
+ModelData$status <- 1 #this handles any "censoring" - every "patient" sees the outcome therefore it's essentially uncensored 
+head(ModelData)
+
+# Survival Object 
+Object1 <- survfit(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelData) 
+str(Object1)  
+
+# {Graph it}
+survfit2(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelData) %>% 
+  ggsurvfit() +
+  labs(
+    x = "Days",
+    y = "Probability Not Yet Received"
+  ) + 
+  add_confidence_interval()
+
+# Coefficients!
+Summary <- summary(survfit(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelData, conf.type = "plain"), times = 0:300) # at 2 weeks, 18.5% of COVID-19 diagnoses haven't yet come in
+Summary2 <- do.call ( rbind , Summary)
+Coefficients <- t(Summary2) 
+Coefficients <- as.data.frame(Coefficients)
+Coefficients <- Coefficients %>% select(c("time", "surv", "lower", "upper")) 
+
+Coefficients$surv <- 1-as.numeric(Coefficients$surv)
+Coefficients$lower2 <- 1-as.numeric(Coefficients$upper) # they switch because of the subtraction
+Coefficients$upper <- 1-as.numeric(Coefficients$lower) #lower2 is the new lower; old lower is obsolete
+
+Coefficients <-  subset(Coefficients, select = -lower ) #drop older 'lower' column
+names(Coefficients)[names(Coefficients) == 'lower2'] <- 'lower'#rename lower2 to lower
+
+Coefficients$time <- as.factor(as.character(Coefficients$time))
+
+view(Coefficients) # yay we did it :)
+
+write.xlsx(Coefficients, file = "Coefficients.xlsx")
+
+```
+
+# Basic Prediction
+
+```{r predict, include=FALSE}
+
+
+# Pull in Data
+start_date <- "1Oct2023"
+end_date <- "8Jan2024"
+test <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&ccddCategory=cdc%20covid-specific%20dd%20v1&&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=timeResolution&columnField=hasBeenAdmitted")
+api_response <- myProfile$get_api_response(test)
+test <- content(api_response, style = "text") %>% read_csv()
+
+# Table of Counts by Admission Date, Days Ago Count
+names(test)[1]<-'Date_of_Visit'
+names(test)[2]<-'HasBeenAdmittedNo'
+names(test)[3]<-'HasBeenAdmittedYes'
+test$Total <- test$HasBeenAdmittedNo + test$HasBeenAdmittedYes
+test <- test %>%
+        mutate('DaysAgo' = as.numeric(difftime(Sys.Date(),
+                                               `Date_of_Visit`,
+                                               units = c("days"))))
+is.data.frame(test)
+
+# Turn DaysAgo into a Factor and Merge By It
+test$DaysAgo <- as.factor(test$DaysAgo)
+Predict <- merge(x = test, y = Coefficients, by.x = 'DaysAgo', by.y = 'time')
+
+Predict$Estimate <- Predict$Total/Predict$surv
+Predict$EstimateHigh <- Predict$Total/Predict$upper
+Predict$EstimateLow <- Predict$Total/Predict$lower
+
+
+# GRAPH IT
+PredictLong <- Predict %>%
+  select(Date_of_Visit, Total, Estimate, EstimateHigh, EstimateLow) %>%
+  gather(key = "Estimate", value = "Count", -Date_of_Visit)
+view(Predict)
+
+ggplot(PredictLong, aes(x = Date_of_Visit, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#990F0F", "#6B990F", "#0F6B99","#260F99" )) + theme_bw() + 
+ggtitle("Prediction of Final Number Of COVID-19 Diagnosis Codes Received", subtitle = "Back-Calculated From A Survival Curve Of Percent Received n Days After Patient Visit")
+
+
+```
+
+# Admission Status Stratification
+
+## Admitted Prediction
+
+```{r predict, include=FALSE}
+
+ModelDataAdm <- ModelData %>% filter(HasBeenAdmitted == 1)
+
+# Survival Object 
+ObjectAdm <- survfit(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelDataAdm) 
+str(ObjectAdm)  
+
+# {Graph it}
+survfit2(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelDataAdm) %>% 
+  ggsurvfit() +
+  labs(
+    x = "Days",
+    y = "Probability Not Yet Received"
+  ) + 
+  add_confidence_interval()
+
+# Coefficients!
+SummaryAdm <- summary(survfit(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelDataAdm, conf.type = "plain"), times = 0:300) # at 2 weeks, 18.5% of COVID-19 diagnoses haven't yet come in
+SummaryAdm2 <- do.call ( rbind , SummaryAdm)
+CoefficientsAdm <- t(SummaryAdm2) 
+CoefficientsAdm <- as.data.frame(CoefficientsAdm)
+CoefficientsAdm <- CoefficientsAdm %>% select(c("time", "surv", "lower", "upper")) 
+
+CoefficientsAdm$surv <- 1-as.numeric(CoefficientsAdm$surv)
+CoefficientsAdm$lower2 <- 1-as.numeric(CoefficientsAdm$upper) # they switch because of the subtraction
+CoefficientsAdm$upper <- 1-as.numeric(CoefficientsAdm$lower) #lower2 is the new lower; old lower is obsolete
+
+CoefficientsAdm <-  subset(CoefficientsAdm, select = -lower ) #drop older 'lower' column
+names(CoefficientsAdm)[names(CoefficientsAdm) == 'lower2'] <- 'lower'#rename lower2 to lower
+
+CoefficientsAdm$time <- as.factor(as.character(CoefficientsAdm$time))
+
+view(CoefficientsAdm) # yay we did it :)
+
+write.xlsx(CoefficientsAdm, file = "CoefficientsAdm.xlsx")
+```
+
+
+```{r predict, include=FALSE}
+
+
+PredictAdm <- merge(x = test, y = CoefficientsAdm, by.x = 'DaysAgo', by.y = 'time')
+
+PredictAdm$Estimate <- PredictAdm$HasBeenAdmittedYes/PredictAdm$surv
+PredictAdm$EstimateHigh <- PredictAdm$HasBeenAdmittedYes/PredictAdm$upper
+PredictAdm$EstimateLow <- PredictAdm$HasBeenAdmittedYes/PredictAdm$lower
+
+
+# GRAPH IT
+PredictAdmLong <- PredictAdm %>%
+  select(Date_of_Visit, HasBeenAdmittedYes, Estimate, EstimateHigh, EstimateLow) %>%
+  gather(key = "Estimate", value = "Count", -Date_of_Visit)
+view(PredictAdmLong)
+
+ggplot(PredictAdmLong, aes(x = Date_of_Visit, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#FF7F00", "#FFFF32", "#32FF00","#E51932" )) + theme_bw() + 
+ggtitle("ADMITTED: Prediction of Final Number Of COVID-19 Diagnoses Received", subtitle = "Back-Calculated From A Survival Curve Of Percent Received n Days After Patient Visit")
+
+```
+
+## Not Admitted Prediction
+
+```{r predict, include=FALSE}
+
+ModelDataNotAdm <- ModelData %>% filter(HasBeenAdmitted == 0)
+
+# Survival Object 
+ObjectNotAdm <- survfit(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelDataNotAdm) 
+str(ObjectNotAdm)  
+
+# {Graph it}
+survfit2(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelDataNotAdm) %>% 
+  ggsurvfit() +
+  labs(
+    x = "Days",
+    y = "Probability Not Yet Received"
+  ) + 
+  add_confidence_interval()
+
+# Coefficients!
+SummaryNotAdm <- summary(survfit(Surv(ArrivaltoUpdate, status) ~ 1, data = ModelDataNotAdm, conf.type = "plain"), times = 0:300) # at 2 weeks, 18.5% of COVID-19 diagnoses haven't yet come in
+SummaryNotAdm2 <- do.call ( rbind , SummaryNotAdm)
+CoefficientsNotAdm <- t(SummaryNotAdm2) 
+CoefficientsNotAdm <- as.data.frame(CoefficientsNotAdm)
+CoefficientsNotAdm <- CoefficientsNotAdm %>% select(c("time", "surv", "lower", "upper")) 
+
+CoefficientsNotAdm$surv <- 1-as.numeric(CoefficientsNotAdm$surv)
+CoefficientsNotAdm$lower2 <- 1-as.numeric(CoefficientsNotAdm$upper) # they switch because of the subtraction
+CoefficientsNotAdm$upper <- 1-as.numeric(CoefficientsNotAdm$lower) #lower2 is the new lower; old lower is obsolete
+
+CoefficientsNotAdm <-  subset(CoefficientsNotAdm, select = -lower ) #drop older 'lower' column
+names(CoefficientsNotAdm)[names(CoefficientsNotAdm) == 'lower2'] <- 'lower'#rename lower2 to lower
+
+CoefficientsNotAdm$time <- as.factor(as.character(CoefficientsNotAdm$time))
+
+view(CoefficientsNotAdm) # yay we did it :)
+
+write.xlsx(CoefficientsNotAdm, file = "CoefficientsNotAdm.xlsx")
+```
+
+
+```{r predict, include=FALSE}
+
+
+PredictNotAdm <- merge(x = test, y = CoefficientsNotAdm, by.x = 'DaysAgo', by.y = 'time')
+
+PredictNotAdm$Estimate <- PredictNotAdm$HasBeenAdmittedNo/PredictNotAdm$surv
+PredictNotAdm$EstimateHigh <- PredictNotAdm$HasBeenAdmittedNo/PredictNotAdm$upper
+PredictNotAdm$EstimateLow <- PredictNotAdm$HasBeenAdmittedNo/PredictNotAdm$lower
+
+
+# GRAPH IT
+PredictNotAdmLong <- PredictNotAdm %>%
+  select(Date_of_Visit, HasBeenAdmittedNo, Estimate, EstimateHigh, EstimateLow) %>%
+  gather(key = "Estimate", value = "Count", -Date_of_Visit)
+view(PredictNotAdmLong)
+
+ggplot(PredictNotAdmLong, aes(x = Date_of_Visit, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#316395", "#990099", "#56B4E9","#66AA00" )) + theme_bw() + 
+ggtitle("NOT ADMITTED: Prediction of Final Number Of COVID-19 Diagnoses Received", subtitle = "Back-Calculated From A Survival Curve Of Percent Received n Days After Patient Visit")
+
+
+```
+
+## Combined
+
+```{r combine 2 strata, include=FALSE}
+
+
+AdmStratPredict <- merge(x = PredictAdm, y = PredictNotAdm, by = 'DaysAgo') # merge - y is notadm
+AdmStratPredict$TotalPredict <- AdmStratPredict$Estimate.x + AdmStratPredict$Estimate.y
+AdmStratPredict$LowPredict <- AdmStratPredict$EstimateLow.x + AdmStratPredict$EstimateLow.y
+AdmStratPredict$HighPredict <- AdmStratPredict$EstimateHigh.x + AdmStratPredict$EstimateHigh.y
+
+names(AdmStratPredict)[names(AdmStratPredict) == 'Date_of_Visit.x'] <- 'Date_of_Visit'#rename
+names(AdmStratPredict)[names(AdmStratPredict) == 'HasBeenAdmittedYes.x'] <- 'HasBeenAdmittedYes'#rename
+names(AdmStratPredict)[names(AdmStratPredict) == 'HasBeenAdmittedNo.x'] <- 'HasBeenAdmittedNo'#rename
+names(AdmStratPredict)[names(AdmStratPredict) == 'Total.x'] <- 'Total'#rename
+
+AdmStratPredict <- AdmStratPredict %>% select(Date_of_Visit, HasBeenAdmittedYes, HasBeenAdmittedNo, Total, TotalPredict, LowPredict, HighPredict)
+
+#GRAPH
+AdmStratPredictLong <- AdmStratPredict %>%
+  gather(key = "Estimate", value = "Count", -Date_of_Visit)
+view(AdmStratPredictLong)
+ggplot(AdmStratPredictLong, aes(x = Date_of_Visit, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  #scale_color_manual(values = c("#316395", "#990099", "#56B4E9","#66AA00" )) + 
+  theme_bw() + 
+ggtitle("STRATIFIED: Prediction of Final Number Of COVID-19 Diagnoses Received", subtitle = "Back-Calculated From A Survival Curve Of Percent Received n Days After Patient Visit \n Stratified by Admission Status")
+
+```
+
+
+# Does Daily Visit Count Influence Lag?
+
+```{r visit count cleaning, include=FALSE}
+
+#Pull in Visit Count - has to be done by month since there's no way to drop the massive number of zeroes for other states
+#Dec
+start_date <- "1Dec2022"
+end_date <- "31Dec2022"
+facility <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=erFacility&columnField=timeResolution")
+api_response <- myProfile$get_api_response(facility)
+facility <- content(api_response, style = "text") %>% read_csv() 
+facility1 <- facility %>% 
+  filter(str_detect(erFacility, "^MA-"))
+facility1 <- melt(setDT(facility1), id.vars = "erFacility", variable.name = "Date")
+
+#Jan
+start_date <- "1Jan2023"
+end_date <- "31Jan2023"
+facility <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=erFacility&columnField=timeResolution")
+api_response <- myProfile$get_api_response(facility)
+facility <- content(api_response, style = "text") %>% read_csv() 
+facility2 <- facility %>% 
+  filter(str_detect(erFacility, "^MA-"))
+facility2 <- melt(setDT(facility2), id.vars = "erFacility", variable.name = "Date")
+
+#Feb
+start_date <- "1Feb2023"
+end_date <- "28Feb2023"
+facility <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=erFacility&columnField=timeResolution")
+api_response <- myProfile$get_api_response(facility)
+facility <- content(api_response, style = "text") %>% read_csv() 
+facility3 <- facility %>% 
+  filter(str_detect(erFacility, "^MA-"))
+facility3 <- melt(setDT(facility3), id.vars = "erFacility", variable.name = "Date")
+
+#Mar
+start_date <- "1Mar2023"
+end_date <- "31Mar2023"
+facility <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=erFacility&columnField=timeResolution")
+api_response <- myProfile$get_api_response(facility)
+facility <- content(api_response, style = "text") %>% read_csv() 
+facility4 <- facility %>% 
+  filter(str_detect(erFacility, "^MA-"))
+facility4 <- melt(setDT(facility4), id.vars = "erFacility", variable.name = "Date")
+
+#Apr
+start_date <- "1Apr2023"
+end_date <- "30Apr2023"
+facility <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=erFacility&columnField=timeResolution")
+api_response <- myProfile$get_api_response(facility)
+facility <- content(api_response, style = "text") %>% read_csv() 
+facility5 <- facility %>% 
+  filter(str_detect(erFacility, "^MA-"))
+facility5 <- melt(setDT(facility5), id.vars = "erFacility", variable.name = "Date")
+
+#May
+start_date <- "1May2023"
+end_date <- "31May2023"
+facility <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=erFacility&columnField=timeResolution")
+api_response <- myProfile$get_api_response(facility)
+facility <- content(api_response, style = "text") %>% read_csv() 
+facility6 <- facility %>% 
+  filter(str_detect(erFacility, "^MA-"))
+facility6 <- melt(setDT(facility6), id.vars = "erFacility", variable.name = "Date")
+
+#Jun
+start_date <- "1Jun2023"
+end_date <- "30Jun2023"
+facility <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=6201&endDate=", end_date,"&percentParam=noPercent&site=899&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=region&detector=probrepswitch&timeResolution=daily&rowFields=erFacility&columnField=timeResolution")
+api_response <- myProfile$get_api_response(facility)
+facility <- content(api_response, style = "text") %>% read_csv() 
+facility7 <- facility %>% 
+  filter(str_detect(erFacility, "^MA-"))
+facility7 <- melt(setDT(facility7), id.vars = "erFacility", variable.name = "Date")
+
+# Combine months then merge with COVID TAT data
+facilitycounts <- bind_rows(facility1, facility2, facility3, facility4, facility5, facility6, facility7)
+
+FirstCovid$facdate <- paste(FirstCovid$HospitalName, FirstCovid$Date)
+facilitycounts$Date <- as.POSIXct(as.character(facilitycounts$Date), format = "%Y-%m-%d")
+facilitycounts$Date <- format(as.Date(facilitycounts$Date, "%Y-%m-%d"), "%m/%d/%Y") #this took a horrible amount of time - don't touch
+facilitycounts$facdate <- paste(facilitycounts$erFacility, facilitycounts$Date)
+
+FacilityFirstCovid <- merge(FirstCovid, facilitycounts, by = "facdate") %>% select(`Date.x`, `ArrivaltoUpdate`, `HasBeenAdmitted`, `facdate`, `HospitalName`, `value`)
+
+```
+
+```{r visit count analysis 1, include=FALSE}
+
+plot(FacilityFirstCovid$value, FacilityFirstCovid$ArrivaltoUpdate)
+FacilityFirstCovid$logArrivaltoUpdate <- log(FacilityFirstCovid$ArrivaltoUpdate)
+
+
+ggplot(FacilityFirstCovid, aes(x = value, y = ArrivaltoUpdate)) + theme_bw() +
+  geom_point()
+
+summary(lm(ArrivaltoUpdate ~ value, data=FacilityFirstCovid))
+
+```
+
+```{r visit count analysis 2, include=FALSE}
+
+FacilityFirstCovid <-FacilityFirstCovid %>%
+  group_by(HospitalName) %>%
+  mutate(maxvisits = max(as.numeric(value), na.rm=TRUE))
+FacilityFirstCovid$maxvisitpercent <- 100*FacilityFirstCovid$value / FacilityFirstCovid$maxvisits
+FacilityFirstCovid$logArrivaltoUpdate <- log(FacilityFirstCovid$ArrivaltoUpdate)
+
+ggplot(FacilityFirstCovid, aes(x = maxvisitpercent, y = ArrivaltoUpdate)) + theme_bw() +
+  geom_point() + geom_smooth(method='lm', formula= y~x)
+
+summary(lm(ArrivaltoUpdate ~ maxvisitpercent, data=FacilityFirstCovid))
+
+
+```
+
+# Hospital max visits vs lag time
+```{r diagnosis type, include=FALSE}
+
+timebyhosp <- group_by(FacilityFirstCovid, HospitalName) %>%
+  summarise(
+    count = n(),
+    mean = mean(ArrivaltoUpdate, na.rm = TRUE),
+    sd = sd(ArrivaltoUpdate, na.rm = TRUE),
+    median = median(ArrivaltoUpdate, na.rm = TRUE),
+    IQR = IQR(ArrivaltoUpdate, na.rm = TRUE)
+  )
+```
+
+# Diagnosis type - Working/admitting first or skips to final
+```{r diagnosis type, include=FALSE}
+library(tm)
+
+FirstCovid$Diagnosis_Type2 <- removeNumbers(FirstCovid$Diagnosis_Type) #remove numbers
+FirstCovid$Diagnosis_Type2 <- gsub(";", "", FirstCovid$Diagnosis_Type2)
+FirstCovid$Diagnosis_Type2 <- gsub(" ", "", FirstCovid$Diagnosis_Type2)
+
+FirstCovidDiagType <- FirstCovid %>% drop_na(Diagnosis_Type2)
+
+FirstCovidDiagType$FinalFirst <- ifelse(substring(FirstCovidDiagType$Diagnosis_Type2, 1, 1)=="F", "Final Comes First", "Working or Admitting First")
+
+ggplot(FirstCovidDiagType, aes(x=FinalFirst, y=log(ArrivaltoUpdate), fill=FinalFirst)) +
+  geom_violin(trim=FALSE)+theme_bw()
+
+#summary(as.factor(FirstCovidDiagType$FinalFirst))
+
+#non normal even with the log - use Wilcox and Kruskal Wallace test
+group_by(FirstCovidDiagType, FinalFirst) %>%
+  summarise(
+    count = n(),
+    mean = mean(ArrivaltoUpdate, na.rm = TRUE),
+    sd = sd(ArrivaltoUpdate, na.rm = TRUE),
+    median = median(ArrivaltoUpdate, na.rm = TRUE),
+    IQR = IQR(ArrivaltoUpdate, na.rm = TRUE)
+  )
+wilcox.test(log(ArrivaltoUpdate) ~ FinalFirst, data = FirstCovidDiagType, exact = FALSE)
+kruskal.test(log(ArrivaltoUpdate) ~ FinalFirst, data = FirstCovidDiagType)
+```

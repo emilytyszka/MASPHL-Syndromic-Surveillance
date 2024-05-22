@@ -1,0 +1,807 @@
+---
+title: "Lag Analysis"
+output: html_document
+date: "2023-12-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readxl)
+library(plyr)
+library(dplyr)
+library(arsenal)
+library(ggplot2)
+library(writexl)
+library(lubridate) 
+library(data.table)
+library(kableExtra)
+library(tidyr)
+library(janitor)
+library(scales)
+library(kableExtra)
+library(tinytex)
+library(yaml)
+library(ggpubr)
+library(cowplot)
+library(zoo)
+library(formattable)
+library(treemap)
+library(viridis)
+library(paletteer)
+library(rlist)
+library(httr)
+library(magrittr)
+#library(mosaic)
+library(MMWRweek)
+library(stringi)
+library(tidyverse)
+library(Rnssp)
+
+
+```
+
+# Prepare Data 
+```{r data, include=FALSE}
+
+myProfile <- readRDS("~/myProfile.rds")
+
+start_date <- "1Dec2022"
+end_date <- "1Dec2023"
+
+#Pull in
+url <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/dataDetails/csv?datasource=va_er&startDate=", start_date, "&medicalGroupingSystem=essencesyndromes&userId=YOURESSENCEID&endDate=", end_date, "&percentParam=noPercent&site=YOURSITE&hospFacilityType=emergency%20care&aqtTarget=DataDetails&ccddCategory=cdc%20broad%20acute%20respiratory%20dd%20v1&geographySystem=region&detector=probrepswitch&timeResolution=daily&refValues=true&field=Date&field=C_Processed_BioSense_ID&field=CCDDParsed&field=PID&field=Admit_Date_Time&field=DischargeDiagnosisMDTUpdates&field=DischargeDiagnosisUpdates&field=HasBeenAdmitted&field=C_Visit_Date_Time")
+
+api_response <- myProfile$get_api_response(url)
+api_data <- content(api_response, style = "text") %>% read_csv()
+api_data$rn <- row.names(api_data) #create a row name for merge
+
+#Convert to tibble, split up the strings, re-merge, reshape
+api_data2 <- as_tibble(api_data)
+api_data2$Index <- paste(api_data2$PID, api_data2$Admit_Date_Time, api_data2$CCDDParsed)
+Wide <- api_data2 %>% separate_wider_delim(DischargeDiagnosisMDTUpdates, delim = "{", names_sep = "", too_few = "align_start")
+Long <- gather(Wide, index, "Update", DischargeDiagnosisMDTUpdates1:DischargeDiagnosisMDTUpdates46, factor_key=TRUE)  #convert long to short - X1 X2 etc turned into 1 column labelled as "Update" 
+Long$Index <- paste(Long$C_Processed_BioSense_ID, parse_number(as.character(Long$index)))
+
+# Clean dates
+Long$Update <- gsub(".*\\}", "", Long$Update) # Get rid of the number in brackets at the start
+Long$Update <- gsub("|", "", Long$Update) #Get rid of the semicolons surrounding messages - now all that is there is a date time
+Long$Update <- gsub(";+", "", Long$Update) #Get rid of the semicolons surrounding messages - now all that is there is a date time
+Long$Update <- as.POSIXct(Long$Update, format="%Y-%m-%d %H:%M:%S", tz="UTC")
+Long <- Long %>% drop_na(Update)
+
+#Repeated on DD Messages
+Wide2 <- api_data2 %>% separate_wider_delim(DischargeDiagnosisUpdates, delim = "{", names_sep = "", too_few = "align_start")
+Long2 <- gather(Wide2, index, `Update DD`, DischargeDiagnosisUpdates1:DischargeDiagnosisUpdates46, factor_key=TRUE)  #convert long to short - X1 X2 etc turned into 1 column labelled as "Update" 
+
+Long2$Index <- paste(Long2$C_Processed_BioSense_ID, parse_number(as.character(Long2$index)))
+
+Long2$`Update DD` <- gsub(".*\\}", "", Long2$`Update DD`)# Get rid of the number in brackets at the start
+Long2 <- Long2 %>% filter(`Update DD` != "")
+Long2 <- Long2 %>% drop_na(`Update DD`)
+Long2a <- Long2 %>% select(`Index`, `Update DD`)
+
+Alla <- merge(Long, Long2a, by = "Index")
+
+All <- Alla  %>% filter(`Update DD` != ";;|")
+
+```
+
+
+
+# Summary Stats: Arrival to First Broad Acute Update 
+
+```{r graph 1, include=FALSE}
+
+# Find arrival-to-update time
+All$ArrivaltoUpdate <- as.numeric(difftime( All$Update, All$Admit_Date_Time, units = "weeks"))
+
+# Filter to first appearance - adapting the ESSENCE syndrome definition (removing "and" statements because of the assumption ESSENCE handled them)
+Respiratories <- All %>%
+  filter(
+    grepl(
+      "A22.1|A221|A37|A48.1|A481|B25.0|B250|B34.2|B34.9|B342|B349|B44.0|B44.9|B440|B449|B44.81|B4481|B97.2|B97.4|B972|B974|J00|J01|J02|J03|J04|J05|J06|J10|J11|J12|J13|J14|J15|J16|J17|J18|J20|J21|J22|J39.8|J398|J40|J47.9|J479|J80|J85.1|J851|J95.821|J95821|J96.0|J96.2|J960|J962|J96.91|J9691|J98.8|J988|R05|R06.00|R06.02|R0600|R0602|R06.03|R0603|R09.02|R0902|R09.2|R092|R43.0|R43.1|R43.2|R430|R431|R432|U07.1|U07.2|U071|U072|022.1|0221|034.0|0340|041.5|0415|041.81|04181|079.1|079.2|079.3|079.6|0791|0792|0793|0796|079.82|079.89|07982|07989|079.99|07999|117.3|1173|460|461|462|463|464|465|466|461.|461|461.|464.|465.|466.|461|464|465|466|478.9|4789|480.|482.|483.|484.|487.|488.|480|481|482|483|484|485|486|487|488|490|494.1|4941|517.1|5171|518.51|518.53|51851|51853|518.6|5186|518.81|518.82|518.84|51881|51882|51884|519.8|5198|073.0|0730|781.1|7811|786.2|7862|799.02|79902|799.1|7991|033|033.|033[0-9]|780.60|78060", 
+      `Update DD`)) 
+# filter to ALL BROAD ACUTE RESP
+Respiratories <- Respiratories[order(Respiratories$ArrivaltoUpdate),] # sort by lower time 
+class(Respiratories$ArrivaltoUpdate)
+
+FirstResp <-Respiratories |> group_by(C_Processed_BioSense_ID) |> slice(1) # pull first appearance
+
+
+summary(FirstResp$ArrivaltoUpdate)
+hist(FirstResp$ArrivaltoUpdate, breaks = 90)
+
+negatives <- FirstResp %>% filter(ArrivaltoUpdate <0)
+FirstResp <- FirstResp %>% filter(ArrivaltoUpdate>=0)
+``` 
+
+```{r admission breakup, include=FALSE}
+
+FirstResp$HasBeenAdmitted <- as.factor(FirstResp$HasBeenAdmitted)
+
+ggplot(FirstResp, aes(x = ArrivaltoUpdate)) + theme_bw() +
+  geom_histogram(aes(fill = HasBeenAdmitted),
+                position = "identity", bins = 90) + facet_grid(HasBeenAdmitted ~ .)
+
+tapply(FirstResp$ArrivaltoUpdate, FirstResp$HasBeenAdmitted, summary) 
+
+summary(FirstResp$HasBeenAdmitted)
+
+library(survival)
+library(ggsurvfit)
+GraphData <- FirstResp %>% select(ArrivaltoUpdate, HasBeenAdmitted)
+GraphData$status <- 1
+survfit2(Surv(ArrivaltoUpdate, status) ~ HasBeenAdmitted, data = GraphData) %>% 
+  ggsurvfit() +
+  labs(
+    x = "Weeks",
+    y = "Probability Not Yet Received"
+  ) + 
+  labs(title = "Receipt of Respiratory Diagnosis by Hospital Admission Status (1=Yes)")
+
+```
+
+
+# Rough Distribution Method
+
+
+## Distributions 
+```{r  disrib method, include=FALSE}
+
+
+ModelData <- FirstResp %>% select(ArrivaltoUpdate, HasBeenAdmitted, Update, Admit_Date_Time)
+ModelData$status <- 1
+
+#write_xlsx(ModelData, path = "DataLongJanuary2019toJune2023.xlsx")
+
+head(ModelData)
+
+WithinNWeeks <- ModelData %>% 
+  group_by(as.Date(Admit_Date_Time)) %>% #group by day of arrival
+  arrange(Update) %>%  #sort earliest update first
+  mutate(cumreceived = cumsum(status)) %>% #cumulative received by time on that day
+  mutate(totalreceived = max(cumreceived)) %>% #maximum of those aka sum for the day
+  mutate(percentreceived = (cumreceived/totalreceived)) %>% #percent of daily total received at each update
+  mutate(endofweek = ceiling(ArrivaltoUpdate)) # tells us that this update will first be seen at the count of week N
+  
+WithinNWeeksData <- WithinNWeeks %>% 
+  group_by(as.factor(as.Date(Admit_Date_Time)), endofweek) %>% # for each combo date+days from visit
+  filter(percentreceived == max(percentreceived)) # for each combo date+weeks from visit, find the max cumulative sum
+
+# Within 1 Week for all dates
+Within1Week <- WithinNWeeksData %>% filter(endofweek == "1")
+Within1WeeksPlot <- ggplot(Within1Week, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "red3") +
+  labs(title = "1 Week")
+
+# Within 2 Weeks
+Within2Weeks <- WithinNWeeksData %>% filter(endofweek == "2")
+Within2WeeksPlot <- ggplot(Within2Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "orange2") +
+  labs(title = "2 Weeks")
+
+# Within 3 Weeks
+Within3Weeks <- WithinNWeeksData %>% filter(endofweek == "3")
+Within3WeeksPlot <- ggplot(Within3Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "yellow2") +
+  labs(title = "3 Weeks")
+
+# Within 4 Weeks
+Within4Weeks <- WithinNWeeksData %>% filter(endofweek == "4")
+Within4WeeksPlot <- ggplot(Within4Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "green2") +
+  labs(title = "4 Weeks")
+
+# Within 5 Weeks
+Within5Weeks <- WithinNWeeksData %>% filter(endofweek == "5")
+Within5WeeksPlot <- ggplot(Within5Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "cyan3") +
+  labs(title = "5 Weeks")
+
+# Within 6 Weeks
+Within6Weeks <- WithinNWeeksData %>% filter(endofweek == "6")
+Within6WeeksPlot <- ggplot(Within6Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "blue3") +
+  labs(title = "6 Weeks")
+
+# Within 7 Weeks
+Within7Weeks <- WithinNWeeksData %>% filter(endofweek == "7")
+Within7WeeksPlot <- ggplot(Within7Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "mediumpurple3") +
+  labs(title = "7 Weeks")
+
+# Within 8 Weeks
+Within8Weeks <- WithinNWeeksData %>% filter(endofweek == "8")
+Within8WeeksPlot <- ggplot(Within8Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "darkviolet") +
+  labs(title = "8 Weeks")
+
+# Within 9 Weeks
+Within9Weeks <- WithinNWeeksData %>% filter(endofweek == "9")
+Within9WeeksPlot <- ggplot(Within9Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "magenta3") +
+  labs(title = "9 Weeks")
+
+# Within 10 Weeks
+Within10Weeks <- WithinNWeeksData %>% filter(endofweek == "10")
+Within10WeeksPlot <- ggplot(Within10Weeks, aes(x = percentreceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "maroon1") +
+  labs(title = "10 Weeks")
+
+
+  
+WithinNWeeksList <- list(Within1WeeksPlot, Within2WeeksPlot, Within3WeeksPlot, Within4WeeksPlot, Within5WeeksPlot, Within6WeeksPlot, Within7WeeksPlot, Within8WeeksPlot, Within9WeeksPlot, Within10WeeksPlot)
+ggarrange(plotlist = WithinNWeeksList, ncol = 3, nrow = 4)
+
+
+#Percentiles
+DistribsCoefs <- WithinNWeeksData %>% group_by(as.factor(endofweek)) %>%
+  summarize("5%" =quantile(percentreceived,probs=0.05),
+            mean =quantile(percentreceived,probs=0.5),
+            "95%" =quantile(percentreceived,probs=0.95))
+names(DistribsCoefs)[1]<-'WeeksAgo'
+
+WithinNWeeksData10 <- WithinNWeeksData %>% filter(endofweek <= 10)
+WithinNWeeksData10$endofweek <- as.factor(WithinNWeeksData10$endofweek)
+
+ggplot(WithinNWeeksData10, aes(x=as.factor(endofweek), 
+                              y=percentreceived, fill=as.factor(endofweek)
+                              )) + theme_bw() + geom_boxplot()
+
+ggplot(WithinNWeeksData10, aes(x = percentreceived, fill = endofweek)) + theme_bw() +
+  geom_histogram(bins = 100) +
+  facet_wrap(vars(`endofweek`))
+```
+
+## Predict
+
+```{r  predict with distribs, include=FALSE}
+
+# Pull in Data
+start_date <- "1Oct2023"
+end_date <- "04May2024"
+test <-paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder/csv?datasource=va_er&startDate=",start_date,"&medicalGroupingSystem=essencesyndromes&userId=YOURESSENCEID&endDate=", end_date,"&percentParam=noPercent&site=YOURSITE&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&ccddCategory=cdc%20broad%20acute%20respiratory%20dd%20v1&geographySystem=region&detector=probrepswitch&timeResolution=weekly&rowFields=timeResolution&columnField=hasBeenAdmitted")
+test <- myProfile$get_api_data(test, fromCSV = TRUE)
+# Table of Counts by Admission Date, Days Ago Count
+names(test)[1]<-'Week_of_Visit'
+names(test)[2]<-'HasBeenAdmittedNo'
+names(test)[3]<-'HasBeenAdmittedYes'
+test$Total <- test$HasBeenAdmittedNo + test$HasBeenAdmittedYes
+test <- test %>%
+        mutate('WeeksAgo' = as.numeric(difftime(Sys.Date(),
+                                               as.POSIXct(paste( 4, `Week_of_Visit`, sep = "-" ), 
+                                                          format = "%u-%Y-%U" ),
+                                               units = c("weeks")))) # I am surprised that worked...
+
+# Turn DaysAgo into a Factor and Merge By It
+test$WeeksAgo <- as.factor(test$WeeksAgo)
+Predict <- merge(x = test, y = DistribsCoefs, by= 'WeeksAgo')
+
+Predict$Estimate <- Predict$Total/Predict$mean
+Predict$EstimateHigh <- Predict$Total/Predict$`5%`
+Predict$EstimateLow <- Predict$Total/Predict$`95%`
+
+# GRAPH IT
+Predict$Date <- as.POSIXct(paste( 1, Predict$`Week_of_Visit`, sep = "-" ), 
+                                                          format = "%u-%Y-%U" )
+PredictLong <- Predict %>%
+  select(Date, Estimate, EstimateHigh, EstimateLow, Total) %>%
+  gather(key = "Estimate", value = "Count", -Date)
+
+ggplot(PredictLong, aes(x = Date, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#FFBE0B", "#FC6722", "#B80050","#004ECC" )) + theme_bw() + 
+ggtitle("Rough Distribution Method: Prediction of Final COVID-19 Diagnoses Received", subtitle = "Calculated From CIs of Percents Recieved")
+
+#write_xlsx(Predict, path = "BasicDistribPredictionWeekly.xlsx")
+
+
+```
+
+# Loop of Models
+
+```{r  loop, include=FALSE}
+
+ModelData$Date <- as.Date(ModelData$Admit_Date_Time)
+
+#Get Data
+library(purrr)
+
+#Make Data Fit The Input Format - each column is a vector listing arrival to update times in weeks
+ModelData2 <- ModelData %>% ungroup() %>% select(ArrivaltoUpdate, Date, -C_Processed_BioSense_ID)%>% group_by(Date) %>% mutate(ID = row_number())
+ModelData3 <- ModelData2 %>% pivot_wider(names_from = Date, values_from = ArrivaltoUpdate) %>% select(-ID) 
+
+# model response using each predictor to give a list of model outputs
+LoopFit <- apply(ModelData3, 2, function(ArrivaltoUpdate) summary(survfit(Surv(ArrivaltoUpdate) ~ 1), times = 0:300)$`surv`)
+
+#Unlist the matrix
+LoopFit2<-as.data.frame(do.call(rbind, LoopFit)) # rows are now dates, columns are days since visit, values are % not received
+LoopFit2$Date <- rownames(LoopFit2)# turn row name into its own column
+setcolorder(LoopFit2, neworder = "Date") #date column to front
+LoopFit2 <- melt(setDT(LoopFit2), id.vars = "Date", variable.name = "WeeksAgo") # wide to long
+
+# Fix DaysAgo
+LoopFit2$WeeksAgo<-gsub("V","",as.character(LoopFit2$WeeksAgo)) #remove "V"
+LoopFit2$WeeksAgo <- as.numeric(LoopFit2$WeeksAgo)-1 #subtract 1 - day 0 is day of visit
+
+# Rename columns and turn values from "% not received" to "% received"
+names(LoopFit2)[3]<-'PercentReceived'
+LoopFit2$PercentReceived <- 1 - as.numeric(LoopFit2$PercentReceived) # turn values from "% not received" to "% received"
+
+#yayyyy :)
+
+```
+
+```{r graph loop, include=FALSE}
+
+# Box plot of first 10 days                     
+LoopFit10 <- LoopFit2 %>% filter(WeeksAgo <= 10)
+LoopFit10$WeeksAgo <- as.factor(LoopFit10$WeeksAgo)
+ggplot(LoopFit10, aes(x=as.factor(WeeksAgo), 
+                              y=PercentReceived, fill=as.factor(WeeksAgo)
+                              )) + theme_bw() + geom_boxplot()
+
+# Within 1 day for all dates
+Within1DayLoop <- LoopFit2 %>% filter(WeeksAgo == "1")
+Within1WeeksLoopPlot <- ggplot(Within1DayLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "red3") +
+  labs(title = "1 Week")
+
+# Within 2 days
+Within2WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "2")
+Within2WeeksLoopPlot <-ggplot(Within2WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "orange2")+
+  labs(title = "2 Weeks")
+
+
+# Within 3 days
+Within3WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "3")
+Within3WeeksLoopPlot <-ggplot(Within3WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "yellow2")+
+  labs(title = "3 Weeks")
+
+# Within 4 days
+Within4WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "4")
+Within4WeeksLoopPlot <-ggplot(Within4WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "green2")+
+  labs(title = "4 Weeks")
+
+# Within 5 days
+Within5WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "5")
+Within5WeeksLoopPlot <-ggplot(Within5WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "cyan3")+
+  labs(title = "5 Weeks")
+
+# Within 6 days
+Within6WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "6")
+Within6WeeksLoopPlot <-ggplot(Within6WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "blue3")+
+  labs(title = "6 Weeks")
+
+# Within 7 days
+Within7WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "7")
+Within7WeeksLoopPlot <-ggplot(Within7WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "mediumpurple3")+
+  labs(title = "7 Weeks")
+
+# Within 8 days
+Within8WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "8")
+Within8WeeksLoopPlot <-ggplot(Within8WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "darkviolet")+
+  labs(title = "8 Weeks")
+
+# Within 9 days
+Within9WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "9")
+Within9WeeksLoopPlot <-ggplot(Within9WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "magenta3")+
+  labs(title = "9 Weeks")
+
+# Within 10 days
+Within10WeeksLoop <- LoopFit2 %>% filter(WeeksAgo == "10")
+Within10WeeksLoopPlot <-ggplot(Within10WeeksLoop, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "maroon1")+
+  labs(title = "10 Weeks")
+
+WithinNWeeksLoopList <- list(Within1WeeksLoopPlot, Within2WeeksLoopPlot, Within3WeeksLoopPlot, Within4WeeksLoopPlot, Within5WeeksLoopPlot, Within6WeeksLoopPlot, Within7WeeksLoopPlot, Within8WeeksLoopPlot, Within9WeeksLoopPlot, Within10WeeksLoopPlot)
+ggarrange(plotlist = WithinNWeeksLoopList, ncol = 3, nrow = 4)
+
+
+```
+
+```{r  predict with loop, include=FALSE}
+
+#LoopFit2fixed <- LoopFit2 %>% filter(PercentReceived != 1) %>% filter(PercentReceived != 0)
+
+LoopCoefs <- LoopFit2 %>% group_by(as.factor(WeeksAgo)) %>%
+  summarize("5%" =quantile(PercentReceived,probs=0.05),
+            mean =quantile(PercentReceived,probs=0.50),
+            "95%" =quantile(PercentReceived,probs=0.95))
+names(LoopCoefs)[1]<-'WeeksAgo'
+write_xlsx(LoopCoefs, path = "LoopedSurvivalMethodCoefficientsWeekly.xlsx")
+
+PredictLoop <- merge(x = test, y = LoopCoefs, by= 'WeeksAgo')
+
+PredictLoop$Estimate <- PredictLoop$Total/PredictLoop$mean
+PredictLoop$EstimateHigh <- PredictLoop$Total/PredictLoop$`5%`
+PredictLoop$EstimateLow <- PredictLoop$Total/PredictLoop$`95%`
+
+#PredictLoop <- PredictLoop %>% filter(WeeksAgo != "24" & WeeksAgo != "30" & WeeksAgo != "20")
+
+# GRAPH IT
+PredictLoop$Date <- as.POSIXct(paste( 1, PredictLoop$`Week_of_Visit`, sep = "-" ), 
+                                                          format = "%u-%Y-%U" )
+PredictLoopLong <- PredictLoop %>%
+  select(Date, Estimate, EstimateHigh, EstimateLow, Total) %>%
+  gather(key = "Estimate", value = "Count", -Date)
+
+ggplot(PredictLoopLong, aes(x = Date, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#FFBE0B", "#FC6722", "#B80050","#004ECC" )) + theme_bw() + 
+ggtitle("Looped Fits Method: Prediction of Final COVID-19 Diagnoses Received", subtitle = "Calculated From CIs of Percents Calculated by Models")
+
+
+```
+
+# Loop of Models - only use dates with >20 visits and Drop "0%" datapoints
+
+```{r  loop, include=FALSE}
+
+#List to filter days >20 observations
+ObsPerDay <- as.data.frame(table(ModelData2$Date)) # count of observations per day
+DaysToKeep <- ObsPerDay %>% filter(Freq>=20)
+
+# Filter to only keep those days
+ModelData2Filtered <- ModelData2[ModelData2$Date %in% DaysToKeep$Var1 ,]
+ModelData3Filtered <- ModelData2Filtered %>% pivot_wider(names_from = Date, values_from = ArrivaltoUpdate) %>% select(-ID)
+
+# model response using each predictor to give a list of model outputs
+LoopFitFiltered <- apply(ModelData3Filtered, 2, function(ArrivaltoUpdate) summary(survfit(Surv(ArrivaltoUpdate) ~ 1), times = 0:400)$`surv`)
+
+#Unlist the matrix
+LoopFit2Filtered<-as.data.frame(do.call(rbind, LoopFitFiltered)) # rows are now dates, columns are days since visit, values are % not received
+LoopFit2Filtered$Date <- rownames(LoopFit2Filtered)# turn row name into its own column
+setcolorder(LoopFit2Filtered, neworder = "Date") #date column to front
+LoopFit2Filtered <- melt(setDT(LoopFit2Filtered), id.vars = "Date", variable.name = "WeeksAgo") # wide to long
+
+# Fix WeeksAgo
+LoopFit2Filtered$WeeksAgo<-gsub("V","",as.character(LoopFit2Filtered$WeeksAgo)) #remove "V"
+LoopFit2Filtered$WeeksAgo <- as.numeric(LoopFit2Filtered$WeeksAgo)-1 #subtract 1 - day 0 is day of visit
+
+# Rename columns and turn values from "% not received" to "% received"
+names(LoopFit2Filtered)[3]<-'PercentReceived'
+LoopFit2Filtered$PercentReceived <- 1 - as.numeric(LoopFit2Filtered$PercentReceived) # turn values from "% not received" to "% received"
+
+#yayyyy :)
+
+```
+
+```{r graph loop, include=FALSE}
+
+LoopFit2Filtered <- LoopFit2Filtered %>% filter(PercentReceived != 0)
+
+# Box plot of first 10 days                     
+LoopFit10Filtered <- LoopFit2Filtered %>% filter(WeeksAgo <= 10)
+LoopFit10Filtered$WeeksAgo <- as.factor(LoopFit10Filtered$WeeksAgo)
+ggplot(LoopFit10Filtered, aes(x=as.factor(WeeksAgo), 
+                              y=PercentReceived, fill=as.factor(WeeksAgo)
+                              )) + theme_bw() + geom_boxplot()
+
+# Within 1 day for all dates
+Within1DayLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "1")
+Within1WeeksLoopFilteredPlot <- ggplot(Within1DayLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "red3") +
+  labs(title = "1 Week")
+
+# Within 2 days
+Within2WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "2")
+Within2WeeksLoopFilteredPlot <-ggplot(Within2WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "orange2")+
+  labs(title = "2 Weeks")
+
+
+# Within 3 days
+Within3WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "3")
+Within3WeeksLoopFilteredPlot <-ggplot(Within3WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "yellow2")+
+  labs(title = "3 Weeks")
+
+# Within 4 days
+Within4WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "4")
+Within4WeeksLoopFilteredPlot <-ggplot(Within4WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "green2")+
+  labs(title = "4 Weeks")
+
+# Within 5 days
+Within5WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "5")
+Within5WeeksLoopFilteredPlot <-ggplot(Within5WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "cyan3")+
+  labs(title = "5 Weeks")
+
+# Within 6 days
+Within6WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "6")%>% filter(PercentReceived != 0)
+Within6WeeksLoopFilteredPlot <-ggplot(Within6WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "blue3")+
+  labs(title = "6 Weeks")
+
+# Within 7 days
+Within7WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "7")%>% filter(PercentReceived != 0)
+Within7WeeksLoopFilteredPlot <-ggplot(Within7WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "mediumpurple3")+
+  labs(title = "7 Weeks")
+
+# Within 8 days
+Within8WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "8")%>% filter(PercentReceived != 0)
+Within8WeeksLoopFilteredPlot <-ggplot(Within8WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "darkviolet")+
+  labs(title = "8 Weeks")
+
+# Within 9 days
+Within9WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "9")%>% filter(PercentReceived != 0)
+Within9WeeksLoopFilteredPlot <-ggplot(Within9WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, fill = "magenta3")+
+  labs(title = "9 Weeks")
+
+# Within 10 days
+Within10WeeksLoopFiltered <- LoopFit2Filtered %>% filter(WeeksAgo == "10")%>% filter(PercentReceived != 0)
+Within10WeeksLoopFilteredPlot <-ggplot(Within10WeeksLoopFiltered, aes(x = PercentReceived)) + theme_bw() +  geom_histogram(bins = 100, fill = "maroon1")+
+  labs(title = "10 Weeks")
+
+WithinNWeeksLoopFilteredList <- list(Within1WeeksLoopFilteredPlot, Within2WeeksLoopFilteredPlot, Within3WeeksLoopFilteredPlot, Within4WeeksLoopFilteredPlot, Within5WeeksLoopFilteredPlot, Within6WeeksLoopFilteredPlot, Within7WeeksLoopFilteredPlot, Within8WeeksLoopFilteredPlot, Within9WeeksLoopFilteredPlot, Within10WeeksLoopFilteredPlot)
+ggarrange(plotlist = WithinNWeeksLoopFilteredList, ncol = 3, nrow = 4)
+
+
+```
+
+```{r  predict with loop, include=FALSE}
+
+LoopCoefsFiltered <- LoopFit2Filtered %>% group_by(as.factor(WeeksAgo)) %>%
+  summarize("5%" =quantile(PercentReceived,probs=0.05),
+            mean =quantile(PercentReceived,probs=0.50),
+            "95%" =quantile(PercentReceived,probs=0.95))
+names(LoopCoefsFiltered)[1]<-'WeeksAgo'
+write_xlsx(LoopCoefsFiltered, path = "LoopedSurvivalMethodCoefficientsWeeklyFiltered.xlsx")
+
+PredictLoopFiltered <- merge(x = test, y = LoopCoefsFiltered, by= 'WeeksAgo')
+
+PredictLoopFiltered$Estimate <- PredictLoopFiltered$Total/PredictLoopFiltered$mean
+PredictLoopFiltered$EstimateHigh <- PredictLoopFiltered$Total/PredictLoopFiltered$`5%`
+PredictLoopFiltered$EstimateLow <- PredictLoopFiltered$Total/PredictLoopFiltered$`95%`
+
+#PredictLoopFiltered <- PredictLoopFiltered %>% filter(WeeksAgo != "24" & WeeksAgo != "30" & WeeksAgo != "20")
+
+# GRAPH IT
+PredictLoopFiltered$Date <- as.POSIXct(paste( 1, PredictLoopFiltered$`Week_of_Visit`, sep = "-" ), 
+                                                          format = "%u-%Y-%U" )
+PredictLoopFilteredLong <- PredictLoopFiltered %>%
+  select(Date, Estimate, EstimateHigh, EstimateLow, Total) %>%
+  gather(key = "Estimate", value = "Count", -Date)
+
+ggplot(PredictLoopFilteredLong, aes(x = Date, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#FFBE0B", "#FC6722", "#B80050","#004ECC" )) + theme_bw() + 
+ggtitle("Looped Fits Method n>20, no 0% days: Prediction of Final COVID-19 Diagnoses Received", subtitle = "Calculated From CIs of Percents Calculated by Models")
+
+
+```
+
+
+```{r  loop, include=FALSE}
+
+#List to filter days >20 observations
+ObsPerDay <- as.data.frame(table(ModelData2$Date)) # count of observations per day
+DaysToKeep <- ObsPerDay %>% filter(Freq>=20)
+
+# Filter to only keep those days
+ModelData2Filtered <- ModelData2[ModelData2$Date %in% DaysToKeep$Var1 ,]
+ModelData3Filtered <- ModelData2Filtered %>% pivot_wider(names_from = Date, values_from = ArrivaltoUpdate) %>% select(-ID)
+
+# model response using each predictor to give a list of model outputs
+LoopFitFiltered <- apply(ModelData3Filtered, 2, function(ArrivaltoUpdate) summary(survfit(Surv(ArrivaltoUpdate) ~ 1), times = 0:300)$`surv`)
+
+#Unlist the matrix
+LoopFitFiltered2<-as.data.frame(do.call(rbind, LoopFitFiltered)) # rows are now dates, columns are days since visit, values are % not received
+LoopFitFiltered2$date <- rownames(LoopFitFiltered2)# turn row name into its own column
+setcolorder(LoopFitFiltered2, neworder = "date") #date column to front
+LoopFitFiltered2 <- melt(setDT(LoopFitFiltered2), id.vars = "date", variable.name = "DaysAgo") # wide to long
+
+# Fix DaysAgo
+LoopFitFiltered2$DaysAgo<-gsub("V","",as.character(LoopFitFiltered2$DaysAgo)) #remove "V"
+LoopFitFiltered2$DaysAgo <- as.numeric(LoopFitFiltered2$DaysAgo)-1 #subtract 1 - day 0 is day of visit
+
+# Rename columns and turn values from "% not received" to "% received"
+names(LoopFitFiltered2)[1]<-'Date'
+names(LoopFitFiltered2)[3]<-'PercentReceived'
+LoopFitFiltered2$PercentReceived <- 1 - as.numeric(LoopFitFiltered2$PercentReceived) # turn values from "% not received" to "% received"
+
+#yayyyy :)
+
+```
+
+```{r graph loop, include=FALSE}
+
+# Box plot of first 10 days                     
+LoopFitFiltered10 <- LoopFitFiltered2 %>% filter(DaysAgo <= 10)
+LoopFitFiltered10$DaysAgo <- as.factor(LoopFitFiltered10$DaysAgo)
+ggplot(LoopFitFiltered10, aes(x=as.factor(DaysAgo), 
+                              y=PercentReceived, fill=as.factor(DaysAgo)
+                              )) + theme_bw() + geom_boxplot()
+
+
+# Within 1 day for all dates
+Within1DayLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "1")
+ggplot(Within1DayLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "red3")
+
+# Within 2 days
+Within2DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "2")
+ggplot(Within2DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "orange2")
+
+# Within 3 days
+Within3DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "3")
+ggplot(Within3DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "yellow2")
+
+# Within 4 days
+Within4DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "4")
+ggplot(Within4DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "green2")
+
+# Within 5 days
+Within5DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "5")
+ggplot(Within5DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "cyan3")
+
+# Within 6 days
+Within6DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "6")
+ggplot(Within6DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "blue3")
+
+# Within 7 days
+Within7DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "7")
+ggplot(Within7DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "mediumpurple3")
+
+# Within 8 days
+Within8DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "8")
+ggplot(Within8DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "darkviolet")
+
+# Within 9 days
+Within9DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "9")
+ggplot(Within9DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "magenta3")
+
+# Within 10 days
+Within10DaysLoopFiltered <- LoopFitFiltered2 %>% filter(DaysAgo == "10")
+ggplot(Within10DaysLoopFiltered, aes(x = PercentReceived)) + theme_bw() +
+  geom_histogram(bins = 100, color = "black", fill = "maroon1")
+```
+
+```{r  predict with loop, include=FALSE}
+
+#LoopFit2fixed <- LoopFit2 %>% filter(PercentReceived != 1) %>% filter(PercentReceived != 0)
+
+DisribsCoefsFiltered <- LoopFitFiltered2 %>% group_by(as.factor(DaysAgo)) %>%
+  summarize("5%" =quantile(PercentReceived,probs=0.10),
+            mean =quantile(PercentReceived,probs=0.50),
+            "95%" =quantile(PercentReceived,probs=0.90))
+names(DisribsCoefsFiltered)[1]<-'DaysAgo'
+write_xlsx(DisribsCoefsFiltered, path = "LoopedSurvivalMethodFILTEREDCoefficients.xlsx")
+
+test4 <- test %>% select(Date_of_Visit, Total, DaysAgo)
+test4 <- merge(test4, DisribsCoefsFiltered, by = "DaysAgo")
+
+#predictions!
+test4$HighEstimate <- test4$Total/test4$`5%`
+test4$LowEstimate <- test4$Total/test4$`95%`
+test4$Estimate <- test4$Total/test4$mean
+
+# GRAPH IT
+test4longloop <- test4 %>%
+  select(Date_of_Visit, Estimate, HighEstimate, LowEstimate, Total) %>%
+  gather(key = "Estimate", value = "Count", -Date_of_Visit)
+
+test4longloop <- test4longloop %>% filter(Date_of_Visit > "2024-02-01")
+
+ggplot(test4longloop, aes(x = Date_of_Visit, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#FFBE0B", "#FC6722", "#B80050","#004ECC" )) + theme_bw() + 
+ggtitle("Rough Distribution Method: Prediction of Final COVID-19 Diagnoses Received", subtitle = "Back-Calculated From Distributions Of Percent Received n Days After Patient Visit")
+
+library(xlsx)
+
+
+```
+
+
+# Distribution Method - Predictions by Admission Status
+
+## Distributions
+```{r  assess - basic distrib prediction, include=FALSE}
+
+WithinNWeeksAdmit <- ModelData %>% 
+  group_by(as.Date(Admit_Date_Time), HasBeenAdmitted) %>% #group by day of arrival and admission
+  arrange(Update) %>%  #sort earliest update first
+  mutate(cumreceived = cumsum(status)) %>% #cumulative received by time on that day
+  mutate(totalreceived = max(cumreceived)) %>% #maximum of those aka sum for the day
+  mutate(percentreceived = (cumreceived/totalreceived)) %>% #percent of daily total received at each update
+  mutate(endofweek = ceiling(ArrivaltoUpdate)) # tells us that this update will first be seen at the count of week N
+
+WithinNWeeksDataAdmit <- WithinNWeeksAdmit %>% 
+  group_by(as.factor(as.Date(Admit_Date_Time)), endofweek, 
+           HasBeenAdmitted) %>% # for each combo date+days from visit+admission
+  filter(percentreceived == max(percentreceived)) # for each combo date+weeks from visit, find the max cumulative sum
+
+DistribsCoefsAdmitted <- WithinNWeeksDataAdmit %>% filter(HasBeenAdmitted==1) %>% group_by(as.factor(endofweek)) %>%
+  summarize("5%" =quantile(percentreceived,probs=0.05),
+            mean =quantile(percentreceived,probs=0.5),
+            "95%" =quantile(percentreceived,probs=0.95))
+names(DistribsCoefsAdmitted)[1]<-'WeeksAgo'
+
+DistribsCoefsNotAdmitted <- WithinNWeeksDataAdmit %>% filter(HasBeenAdmitted==0) %>% group_by(as.factor(endofweek)) %>%
+  summarize("5%" =quantile(percentreceived,probs=0.05),
+            mean =quantile(percentreceived,probs=0.5),
+            "95%" =quantile(percentreceived,probs=0.95))
+names(DistribsCoefsNotAdmitted)[1]<-'WeeksAgo'
+
+```
+ 
+## Predict - Admitted
+```{r  predict with distribs, include=FALSE}
+
+
+# Turn DaysAgo into a Factor and Merge By It
+test$WeeksAgo <- as.factor(test$WeeksAgo)
+PredictAdmitted <- merge(x = test, y = DistribsCoefsAdmitted, by= 'WeeksAgo')
+
+PredictAdmitted$Estimate <- PredictAdmitted$HasBeenAdmittedYes/PredictAdmitted$mean
+PredictAdmitted$EstimateHigh <- PredictAdmitted$HasBeenAdmittedYes/PredictAdmitted$`5%`
+PredictAdmitted$EstimateLow <- PredictAdmitted$HasBeenAdmittedYes/PredictAdmitted$`95%`
+
+# GRAPH IT
+PredictAdmitted$Date <- as.POSIXct(paste( 1, PredictAdmitted$`Week_of_Visit`, sep = "-" ), 
+                                                          format = "%u-%Y-%U" )
+PredictAdmittedLong <- PredictAdmitted %>%
+  select(Date, Estimate, EstimateHigh, EstimateLow, HasBeenAdmittedYes) %>%
+  gather(key = "Estimate", value = "Count", -Date)
+
+ggplot(PredictAdmittedLong, aes(x = Date, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#FFBE0B", "#FC6722", "#B80050","#004ECC" )) + theme_bw() + 
+ggtitle("ADMITTED: Prediction of Final COVID-19 Diagnoses Received", subtitle = "Calculated From CIs of via Rough Distribution Method")
+
+#write_xlsx(PredictAdmittedLong, path = "BasicDistribPredictionWeeklyAdmit.xlsx")
+
+
+```
+
+## Predict - Not Admitted
+```{r  predict with distribs 2, include=FALSE}
+
+
+# Turn DaysAgo into a Factor and Merge By It
+test$WeeksAgo <- as.factor(test$WeeksAgo)
+PredictNotAdmitted <- merge(x = test, y = DistribsCoefsNotAdmitted, by= 'WeeksAgo')
+
+PredictNotAdmitted$Estimate <- PredictNotAdmitted$HasBeenAdmittedNo/PredictNotAdmitted$mean
+PredictNotAdmitted$EstimateHigh <- PredictNotAdmitted$HasBeenAdmittedNo/PredictNotAdmitted$`5%`
+PredictNotAdmitted$EstimateLow <- PredictNotAdmitted$HasBeenAdmittedNo/PredictNotAdmitted$`95%`
+
+# GRAPH IT
+PredictNotAdmitted$Date <- as.POSIXct(paste( 1, PredictNotAdmitted$`Week_of_Visit`, sep = "-" ), 
+                                                          format = "%u-%Y-%U" )
+PredictNotAdmittedLong <- PredictNotAdmitted %>%
+  select(Date, Estimate, EstimateHigh, EstimateLow, HasBeenAdmittedNo) %>%
+  gather(key = "Estimate", value = "Count", -Date)
+
+ggplot(PredictNotAdmittedLong, aes(x = Date, y = Count)) + 
+  geom_line(aes(color = Estimate, linetype = Estimate)) + 
+  scale_color_manual(values = c("#FFBE0B", "#FC6722", "#B80050","#004ECC" )) + theme_bw() + 
+ggtitle("NOT ADMITTED: Prediction of Final COVID-19 Diagnoses Received", subtitle = "Calculated From CIs of via Rough Distribution Method")
+
+#write_xlsx(PredictNotAdmittedLong, path = "BasicDistribPredictionWeeklyNotAdmit.xlsx")
+
+
+```
